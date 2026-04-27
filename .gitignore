@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Data and model outputs
+models/*.pkl
+models/*.joblib
+data/raw/*.csv
+data/processed/*.csv
+
+# Environment secrets
+.env
+
+# VS Code local settings
+.vscode/settings.json
