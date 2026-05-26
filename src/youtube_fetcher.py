@@ -18,7 +18,7 @@ def fetch_comments(
         for attempt in range(5):
             try:
                 request = youtube.commentThreads().list(
-                    part="id,snippet,replies",
+                    part="id,snippet",
                     videoId=video_id,
                     maxResults=100,
                     textFormat="plainText",
