@@ -64,7 +64,52 @@ Jika URL pendek seperti:
 
 Maka `video_id` adalah segmen terakhir URL: `dQw4w9WgXcQ`.
 
-## 3) Jalankan Notebook (Block by Block seperti Google Colab)
+## 3) Ambil Data dari MongoDB dan Preprocessing dengan Spark
+
+Kalau data komentar sudah disimpan di MongoDB, workflow-nya sekarang dipisah jadi 2 file:
+
+- `src/mongo_comments_loader.py` untuk membaca collection `comments`
+- `src/preprocess_spark.py` untuk preprocessing teks dengan Apache Spark
+
+Pastikan `.env` berisi nilai ini:
+
+```env
+MONGO_URI=...
+MONGO_DB=analisis_sentimen
+MONGO_COMMENTS_COLLECTION=comments
+SPARK_MASTER=local[*]
+```
+
+Keterangan:
+- `MONGO_COMMENTS_COLLECTION=comments` adalah default collection komentar yang dipakai script.
+- `SPARK_MASTER` bisa tetap `local[*]` kalau jalan di laptop sendiri.
+- Kalau field teks di MongoDB bukan `text_original`, set `SPARK_TEXT_COLUMN` di `.env`.
+
+Jalankan loader untuk cek data:
+
+```powershell
+python src\mongo_comments_loader.py
+```
+
+Jalankan preprocessing Spark:
+
+```powershell
+python src\preprocess_spark.py
+```
+
+Hasil preprocessing disimpan ke:
+
+```text
+notebooks/data/processed/comments_processed_spark
+```
+
+Kalau ingin format CSV, tambahkan ke `.env`:
+
+```env
+SPARK_PROCESSED_OUTPUT_FORMAT=csv
+```
+
+## 4) Jalankan Notebook (Block by Block seperti Google Colab)
 
 Ya, **bisa dijalankan satu blok satu blok** di VS Code, sama seperti Google Colab.
 
@@ -79,7 +124,7 @@ Shortcut penting:
 - `Ctrl+Enter`: jalankan cell aktif, tetap di cell itu
 - `Run All`: jalankan semua cell dari atas ke bawah
 
-## 4) Alur Kerja yang Disarankan
+## 5) Alur Kerja yang Disarankan
 
 1. Fetch komentar
 2. Simpan CSV mentah ke `data/raw/`

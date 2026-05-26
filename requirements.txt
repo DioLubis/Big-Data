@@ -2,6 +2,9 @@ pandas==2.2.2
 python-dotenv==1.0.1
 google-api-python-client==2.154.0
 pyarrow==17.0.0
+pymongo==4.8.0
+pyspark==3.5.2
+Sastrawi==1.0.1
 jupyter==1.0.0
 ipykernel==6.29.5
 
