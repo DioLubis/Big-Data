@@ -4,6 +4,7 @@ import os
 from typing import Iterable, Optional
 
 from dotenv import load_dotenv
+from pymongo import MongoClient
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lower, regexp_replace, trim, udf
 from pyspark.sql.types import StringType
@@ -60,34 +61,66 @@ def preprocess_comments_df(
     return processed.drop("_text_source")
 
 
-def save_processed_comments(
+def save_processed_comments_to_mongo(
     df: DataFrame,
-    output_path: str,
-    output_format: str = "parquet",
-) -> None:
-    writer = df.coalesce(1).write.mode("overwrite")
-    if output_format.lower() == "csv":
-        writer.option("header", True).csv(output_path)
-        return
-    writer.parquet(output_path)
+    mongo_uri: str,
+    mongo_db: str,
+    mongo_collection: str,
+    batch_size: int = 1000,
+) -> int:
+    if not mongo_uri or not mongo_db or not mongo_collection:
+        raise ValueError("Konfigurasi MongoDB untuk output preprocessing belum lengkap")
+
+    client = MongoClient(mongo_uri)
+    collection = client[mongo_db][mongo_collection]
+
+    collection.delete_many({})
+
+    inserted_count = 0
+    batch: list[dict] = []
+    for row in df.toLocalIterator():
+        document = row.asDict(recursive=True)
+        document.pop("_id", None)
+        batch.append(document)
+
+        if len(batch) >= batch_size:
+            collection.insert_many(batch)
+            inserted_count += len(batch)
+            batch.clear()
+
+    if batch:
+        collection.insert_many(batch)
+        inserted_count += len(batch)
+
+    client.close()
+    return inserted_count
 
 
 def main() -> None:
     load_dotenv()
     spark = create_spark_session(app_name="mongo-comments-preprocess")
     source_col = os.getenv("SPARK_TEXT_COLUMN")
-    output_path = os.getenv(
-        "SPARK_PROCESSED_OUTPUT_PATH",
-        "notebooks/data/processed/comments_processed_spark",
-    )
-    output_format = os.getenv("SPARK_PROCESSED_OUTPUT_FORMAT", "parquet")
+    mongo_uri = os.getenv("MONGO_URI", "").strip()
+    mongo_db = os.getenv("MONGO_DB", "").strip()
+    processed_collection = os.getenv(
+        "MONGO_PROCESSED_COLLECTION",
+        os.getenv("MONGO_COLLECTION_PROCESSED", "comments_processed"),
+    ).strip()
 
     raw_df = load_comments_spark_df(spark)
     processed_df = preprocess_comments_df(raw_df, source_col=source_col)
 
     processed_df.show(5, truncate=False)
-    save_processed_comments(processed_df, output_path=output_path, output_format=output_format)
-    print(f"Data hasil preprocessing disimpan ke: {output_path} ({output_format})")
+    inserted_count = save_processed_comments_to_mongo(
+        processed_df,
+        mongo_uri=mongo_uri,
+        mongo_db=mongo_db,
+        mongo_collection=processed_collection,
+    )
+    print(
+        "Data hasil preprocessing disimpan ke MongoDB: "
+        f"{mongo_db}.{processed_collection} (dokumen: {inserted_count})"
+    )
 
 
 if __name__ == "__main__":
