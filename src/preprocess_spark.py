@@ -100,6 +100,7 @@ def main() -> None:
     load_dotenv()
     spark = create_spark_session(app_name="mongo-comments-preprocess")
     source_col = os.getenv("SPARK_TEXT_COLUMN")
+    num_partitions = int(os.getenv("SPARK_NUM_PARTITIONS", "4"))
     mongo_uri = os.getenv("MONGO_URI", "").strip()
     mongo_db = os.getenv("MONGO_DB", "").strip()
     processed_collection = os.getenv(
@@ -107,7 +108,7 @@ def main() -> None:
         os.getenv("MONGO_COLLECTION_PROCESSED", "comments_processed"),
     ).strip()
 
-    raw_df = load_comments_spark_df(spark)
+    raw_df = load_comments_spark_df(spark).repartition(num_partitions)
     processed_df = preprocess_comments_df(raw_df, source_col=source_col)
 
     processed_df.show(5, truncate=False)
