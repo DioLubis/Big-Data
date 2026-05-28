@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -68,8 +69,24 @@ def fetch_comments_documents() -> List[Dict[str, Any]]:
     return documents
 
 
+def _normalize_value_for_spark(value: Any) -> Any:
+    if isinstance(value, dict) or isinstance(value, list):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return value
+
+
+def _normalize_document_for_spark(document: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: _normalize_value_for_spark(value)
+        for key, value in document.items()
+    }
+
+
 def load_comments_spark_df(spark: Optional[SparkSession] = None) -> DataFrame:
-    documents = fetch_comments_documents()
+    documents = [
+        _normalize_document_for_spark(document)
+        for document in fetch_comments_documents()
+    ]
     if not documents:
         raise ValueError(
             "Collection MongoDB kosong. Pastikan collection 'comments' berisi data."

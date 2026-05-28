@@ -85,6 +85,58 @@ Keterangan:
 - `SPARK_MASTER` bisa tetap `local[*]` kalau jalan di laptop sendiri.
 - Kalau field teks di MongoDB bukan `text_original`, set `SPARK_TEXT_COLUMN` di `.env`.
 
+### Kalau Mau Connect ke Spark Standalone Master/Worker
+
+Kalau ingin jalan dengan mode cluster, isi `SPARK_MASTER` ke alamat master Spark:
+
+```env
+SPARK_MASTER=spark://<IP_MASTER>:7077
+```
+
+Jalankan master di mesin master:
+
+```powershell
+& "C:\spark\bin\spark-class.cmd" org.apache.spark.deploy.master.Master --host 192.168.100.84 --port 7077 --webui-port 8080
+```
+
+Jalankan worker dari mesin master:
+
+```powershell
+& "C:\spark\bin\spark-class.cmd" org.apache.spark.deploy.worker.Worker spark://192.168.100.84:7077
+```
+
+Jalankan worker dari mesin lain:
+
+```powershell
+$env:SPARK_HOME="C:\spark"
+& "$env:SPARK_HOME\sbin\start-worker.cmd" "spark://<IP_MASTER>:7077"
+```
+
+Kalau worker jalan di mesin yang sama dengan master, command worker tetap sama, hanya IP master bisa diganti dengan `localhost` atau IP lokal mesin itu sendiri.
+
+Kalau mau ngatur resource worker, bisa tambah opsi ini saat start worker:
+
+```powershell
+& "$env:SPARK_HOME\sbin\start-worker.cmd" --cores 4 --memory 4g "spark://<IP_MASTER>:7077"
+```
+
+Catatan:
+- `cores` dan `memory` hanya ngatur kapasitas worker.
+- Itu tidak memperbaiki error schema atau Python worker connect-back.
+- Kalau worker ada di mesin lain, Python dan dependency yang dipakai Spark harus tersedia juga di mesin worker.
+- Kalau perlu, set Python yang dipakai Spark di mesin master dan worker:
+
+```powershell
+$env:PYSPARK_PYTHON="C:\path\to\python.exe"
+$env:PYSPARK_DRIVER_PYTHON="C:\path\to\python.exe"
+```
+
+Untuk cek apakah worker sudah terhubung, buka Spark UI master:
+
+```text
+http://<IP_MASTER>:8080
+```
+
 Jalankan loader untuk cek data:
 
 ```powershell
