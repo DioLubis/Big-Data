@@ -149,16 +149,10 @@ Jalankan preprocessing Spark:
 python src\preprocess_spark.py
 ```
 
-Hasil preprocessing disimpan ke:
-
-```text
-notebooks/data/processed/comments_processed_spark
-```
-
-Kalau ingin format CSV, tambahkan ke `.env`:
+Hasil preprocessing disimpan ke collection MongoDB yang diatur lewat:
 
 ```env
-SPARK_PROCESSED_OUTPUT_FORMAT=csv
+MONGO_PROCESSED_COLLECTION=comments_processed
 ```
 
 ## 4) Jalankan Notebook (Block by Block seperti Google Colab)

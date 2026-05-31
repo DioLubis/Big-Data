@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import os
+from datetime import date, datetime
 from typing import Iterable, Optional
 
 from dotenv import load_dotenv
@@ -33,6 +35,25 @@ def resolve_text_column(df: DataFrame, candidates: Iterable[str] = TEXT_CANDIDAT
 @udf(returnType=StringType())
 def normalize_and_stem_udf(text: Optional[str]) -> str:
     return normalize_and_stem(text or "")
+
+
+def _sanitize_for_mongo(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, (str, bool, int, datetime, date)):
+        return value
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return _sanitize_for_mongo(value.item())
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {key: _sanitize_for_mongo(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_mongo(item) for item in value]
+    return str(value)
 
 
 def preprocess_comments_df(
@@ -71,28 +92,29 @@ def save_processed_comments_to_mongo(
     if not mongo_uri or not mongo_db or not mongo_collection:
         raise ValueError("Konfigurasi MongoDB untuk output preprocessing belum lengkap")
 
-    client = MongoClient(mongo_uri)
-    collection = client[mongo_db][mongo_collection]
-
-    collection.delete_many({})
-
     inserted_count = 0
     batch: list[dict] = []
-    for row in df.toLocalIterator():
-        document = row.asDict(recursive=True)
-        document.pop("_id", None)
-        batch.append(document)
 
-        if len(batch) >= batch_size:
-            collection.insert_many(batch)
-            inserted_count += len(batch)
-            batch.clear()
+    with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
+        client.admin.command("ping")
+        collection = client[mongo_db][mongo_collection]
 
-    if batch:
-        collection.insert_many(batch)
-        inserted_count += len(batch)
+        collection.delete_many({})
 
-    client.close()
+        for row in df.toLocalIterator():
+            document = _sanitize_for_mongo(row.asDict(recursive=True))
+            document.pop("_id", None)
+            batch.append(document)
+
+            if len(batch) >= batch_size:
+                result = collection.insert_many(batch, ordered=False)
+                inserted_count += len(result.inserted_ids)
+                batch.clear()
+
+        if batch:
+            result = collection.insert_many(batch, ordered=False)
+            inserted_count += len(result.inserted_ids)
+
     return inserted_count
 
 
@@ -111,6 +133,7 @@ def main() -> None:
     raw_df = load_comments_spark_df(spark).repartition(num_partitions)
     processed_df = preprocess_comments_df(raw_df, source_col=source_col)
 
+    total_rows = processed_df.count()
     processed_df.show(5, truncate=False)
     inserted_count = save_processed_comments_to_mongo(
         processed_df,
@@ -120,7 +143,8 @@ def main() -> None:
     )
     print(
         "Data hasil preprocessing disimpan ke MongoDB: "
-        f"{mongo_db}.{processed_collection} (dokumen: {inserted_count})"
+        f"{mongo_db}.{processed_collection} "
+        f"(total: {total_rows}, dokumen tersimpan: {inserted_count})"
     )
 
 
