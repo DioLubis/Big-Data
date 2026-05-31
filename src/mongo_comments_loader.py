@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
 from pymongo import MongoClient
 from pyspark.sql import DataFrame, SparkSession
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:  # pragma: no cover - fallback for missing dependency
+    _load_dotenv = None
 
 
 @dataclass(frozen=True)
@@ -18,8 +23,29 @@ class MongoConfig:
     spark_master: str
 
 
+def load_project_env() -> None:
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+
+    if _load_dotenv is not None:
+        _load_dotenv(dotenv_path=env_path, override=False)
+        return
+
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def load_mongo_config() -> MongoConfig:
-    load_dotenv()
+    load_project_env()
 
     mongo_uri = os.getenv("MONGO_URI", "").strip()
     mongo_db = os.getenv("MONGO_DB", "").strip()

@@ -5,13 +5,16 @@ import os
 from datetime import date, datetime
 from typing import Iterable, Optional
 
-from dotenv import load_dotenv
 from pymongo import MongoClient
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lower, regexp_replace, trim, udf
 from pyspark.sql.types import StringType
 
-from mongo_comments_loader import create_spark_session, load_comments_spark_df
+from mongo_comments_loader import (
+    create_spark_session,
+    load_comments_spark_df,
+    load_project_env,
+)
 from preprocess import normalize_and_stem
 
 
@@ -119,7 +122,7 @@ def save_processed_comments_to_mongo(
 
 
 def main() -> None:
-    load_dotenv()
+    load_project_env()
     spark = create_spark_session(app_name="mongo-comments-preprocess")
     source_col = os.getenv("SPARK_TEXT_COLUMN")
     num_partitions = int(os.getenv("SPARK_NUM_PARTITIONS", "4"))
@@ -134,6 +137,11 @@ def main() -> None:
     processed_df = preprocess_comments_df(raw_df, source_col=source_col)
 
     total_rows = processed_df.count()
+    if total_rows == 0:
+        raise ValueError(
+            "Hasil preprocessing kosong. Cek SPARK_TEXT_COLUMN dan isi collection komentar sumber."
+        )
+
     processed_df.show(5, truncate=False)
     inserted_count = save_processed_comments_to_mongo(
         processed_df,
