@@ -88,6 +88,43 @@ Jalankan preprocessing:
 python src\preprocess_spark.py
 ```
 
+## Preprocessing Raw JSON Notebook
+
+Kalau memakai file raw dari notebook:
+
+```text
+notebooks\data\raw\comments_raw_all_videos.json
+```
+
+jalankan:
+
+```powershell
+python src\preprocess_raw_youtube.py
+```
+
+Output akan dibuat ke:
+
+```text
+notebooks\data\processed\comments_preprocessed_all_videos.csv
+notebooks\data\processed\comments_preprocessed_all_videos.jsonl
+```
+
+Preprocessing ini khusus untuk komentar YouTube bahasa Indonesia:
+- flatten struktur `raw_comment_threads`
+- ambil metadata penting komentar dan video
+- buang komentar kosong dan duplikat `comment_id`
+- normalisasi URL, mention, hashtag, emoji, huruf berulang, dan slang seperti `yg`, `gak`, `tdk`, `dgn`
+- tetap mempertahankan negasi seperti `tidak`, `bukan`, `jangan`, dan `belum`
+- tambah fitur ringan seperti jumlah emoji, tanda tanya, tanda seru, URL, dan rasio huruf kapital
+
+Kalau ingin menambahkan stemming Sastrawi, jalankan:
+
+```powershell
+python src\preprocess_raw_youtube.py --with-stem
+```
+
+Catatan: `--with-stem` jauh lebih lambat. Untuk TF-IDF + Logistic Regression, output default `text_preprocessed` biasanya lebih praktis karena sudah bersih dan tetap mempertahankan kata negasi.
+
 ## Spark
 
 ### Mode lokal

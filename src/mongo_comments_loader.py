@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -73,12 +74,33 @@ def load_mongo_config() -> MongoConfig:
 
 def create_spark_session(app_name: str = "mongo-comments-loader") -> SparkSession:
     config = load_mongo_config()
+    src_dir = str(Path(__file__).resolve().parent)
 
-    return (
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        part
+        for part in (src_dir, os.environ.get("PYTHONPATH", ""))
+        if part
+    )
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
+    builder = (
         SparkSession.builder.appName(app_name)
         .master(config.spark_master)
-        .getOrCreate()
+        .config("spark.python.worker.faulthandler.enabled", "true")
+        .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
     )
+
+    if config.spark_master.startswith("local"):
+        os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
+        builder = (
+            builder.config("spark.driver.host", "127.0.0.1")
+            .config("spark.driver.bindAddress", "127.0.0.1")
+        )
+
+    return builder.getOrCreate()
 
 
 def fetch_comments_documents() -> List[Dict[str, Any]]:
