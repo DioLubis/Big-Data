@@ -171,6 +171,69 @@ ESSENTIAL_METADATA_COLUMNS: tuple[str, ...] = (
 )
 
 
+def _prompt_positive_int(prompt: str, default: int) -> int:
+    while True:
+        try:
+            raw_value = input(f"{prompt} [{default}]: ").strip()
+        except EOFError:
+            return default
+
+        if not raw_value:
+            return default
+
+        try:
+            value = int(raw_value)
+        except ValueError:
+            print("Input harus berupa angka bulat positif.", flush=True)
+            continue
+
+        if value > 0:
+            return value
+
+        print("Input harus lebih besar dari 0.", flush=True)
+
+
+def _prompt_memory(prompt: str, default: str) -> str:
+    pattern = re.compile(r"^\d+[kmgKMG]$")
+
+    while True:
+        try:
+            raw_value = input(f"{prompt} [{default}]: ").strip()
+        except EOFError:
+            return default
+
+        if not raw_value:
+            return default
+
+        if pattern.fullmatch(raw_value):
+            return raw_value.lower()
+
+        print("Input memory harus format Spark, contoh: 2g, 4096m.", flush=True)
+
+
+def prompt_spark_resources() -> tuple[int, int, str]:
+    default_total_cores = int(os.getenv("SPARK_CORES", os.getenv("SPARK_NUM_PARTITIONS", "4")))
+    default_executor_cores = int(os.getenv("SPARK_EXECUTOR_CORES", "1"))
+    default_memory = os.getenv(
+        "SPARK_MEMORY",
+        os.getenv("SPARK_EXECUTOR_MEMORY", "2g"),
+    ).strip()
+    spark_master = os.getenv("SPARK_MASTER", "local[*]").strip()
+
+    print("Masukkan resource Spark untuk preprocessing.", flush=True)
+    print(f"Target Spark master: {spark_master}", flush=True)
+    total_cores = _prompt_positive_int("Total core aplikasi", default=default_total_cores)
+    executor_cores = _prompt_positive_int(
+        "Core per executor",
+        default=min(default_executor_cores, total_cores),
+    )
+    while executor_cores > total_cores:
+        print("Core per executor tidak boleh lebih besar dari total core aplikasi.", flush=True)
+        executor_cores = _prompt_positive_int("Core per executor", default=total_cores)
+    memory = _prompt_memory("Memory per executor/driver", default=default_memory)
+    return total_cores, executor_cores, memory
+
+
 def resolve_text_column(df: DataFrame, candidates: Iterable[str] = TEXT_CANDIDATES) -> str:
     for name in candidates:
         if name in df.columns:
@@ -393,11 +456,46 @@ def save_processed_comments_to_mongo(
         client[mongo_db][mongo_collection].delete_many({})
 
     inserted_count = 0
+
+    def insert_partition(rows) -> None:
+        batch: list[dict] = []
+        with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
+            collection = client[mongo_db][mongo_collection]
+            for row in rows:
+                document = _sanitize_for_mongo(row.asDict(recursive=True))
+                document.pop("_id", None)
+                batch.append(document)
+
+                if len(batch) >= batch_size:
+                    collection.insert_many(batch, ordered=False)
+                    batch.clear()
+
+            if batch:
+                collection.insert_many(batch, ordered=False)
+
+    cached_df.foreachPartition(insert_partition)
+    inserted_count = processed_rows
+
+    cached_df.unpersist()
+    return inserted_count
+
+
+def save_processed_comments_to_mongo_serial(
+    df: DataFrame,
+    mongo_uri: str,
+    mongo_db: str,
+    mongo_collection: str,
+    batch_size: int = 1000,
+) -> int:
+    if not mongo_uri or not mongo_db or not mongo_collection:
+        raise ValueError("Konfigurasi MongoDB untuk output preprocessing belum lengkap")
+
+    inserted_count = 0
     batch: list[dict] = []
 
     with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
         collection = client[mongo_db][mongo_collection]
-        for row in cached_df.toLocalIterator():
+        for row in df.toLocalIterator():
             document = _sanitize_for_mongo(row.asDict(recursive=True))
             document.pop("_id", None)
             batch.append(document)
@@ -411,7 +509,6 @@ def save_processed_comments_to_mongo(
             result = collection.insert_many(batch, ordered=False)
             inserted_count += len(result.inserted_ids)
 
-    cached_df.unpersist()
     return inserted_count
 
 
@@ -453,7 +550,13 @@ def preprocess_and_save_comments_to_mongo(
 
 def main() -> None:
     load_project_env()
-    spark = create_spark_session(app_name="mongo-comments-preprocess")
+    spark_cores, executor_cores, spark_memory = prompt_spark_resources()
+    spark = create_spark_session(
+        app_name="mongo-comments-preprocess",
+        cores=spark_cores,
+        executor_cores=executor_cores,
+        memory=spark_memory,
+    )
     source_col = os.getenv("SPARK_TEXT_COLUMN")
     num_partitions = int(os.getenv("SPARK_NUM_PARTITIONS", "4"))
     mongo_uri = os.getenv("MONGO_URI", "").strip()
@@ -467,6 +570,9 @@ def main() -> None:
         "Spark session aktif: "
         f"app_id={spark.sparkContext.applicationId}, "
         f"master={spark.sparkContext.master}, "
+        f"total_cores={spark_cores}, "
+        f"executor_cores={executor_cores}, "
+        f"executor_memory={spark_memory}, "
         f"ui={spark.sparkContext.uiWebUrl or 'tidak tersedia'}",
         flush=True,
     )
@@ -476,7 +582,8 @@ def main() -> None:
         flush=True,
     )
 
-    raw_df = load_comments_spark_df(spark).repartition(num_partitions)
+    effective_partitions = max(num_partitions, spark_cores * 2)
+    raw_df = load_comments_spark_df(spark).repartition(effective_partitions)
     resolved_source_col = source_col or resolve_text_column(raw_df)
 
     total_rows = raw_df.count()
@@ -490,9 +597,11 @@ def main() -> None:
         flush=True,
     )
 
-    preview_rows = list(
-        iter_preprocessed_documents(raw_df.limit(5), source_col=resolved_source_col)
+    processed_df = preprocess_comments_df(raw_df, source_col=resolved_source_col).repartition(
+        effective_partitions
     )
+
+    preview_rows = [row.asDict(recursive=True) for row in processed_df.limit(5).collect()]
     if preview_rows:
         print("Preview hasil preprocessing:")
         for preview_row in preview_rows:
@@ -502,14 +611,14 @@ def main() -> None:
 
     insert_batch_size = int(os.getenv("MONGO_INSERT_BATCH_SIZE", "200"))
 
-    processed_count, inserted_count = preprocess_and_save_comments_to_mongo(
-        raw_df,
-        source_col=resolved_source_col,
+    inserted_count = save_processed_comments_to_mongo(
+        processed_df,
         mongo_uri=mongo_uri,
         mongo_db=mongo_db,
         mongo_collection=processed_collection,
         batch_size=insert_batch_size,
     )
+    processed_count = inserted_count
     print(
         "Data hasil preprocessing disimpan ke MongoDB: "
         f"{mongo_db}.{processed_collection} "

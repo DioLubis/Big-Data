@@ -72,9 +72,18 @@ def load_mongo_config() -> MongoConfig:
     )
 
 
-def create_spark_session(app_name: str = "mongo-comments-loader") -> SparkSession:
+def create_spark_session(
+    app_name: str = "mongo-comments-loader",
+    cores: Optional[int] = None,
+    executor_cores: Optional[int] = None,
+    memory: Optional[str] = None,
+) -> SparkSession:
     config = load_mongo_config()
     src_dir = str(Path(__file__).resolve().parent)
+    spark_master = config.spark_master
+
+    if cores is not None and spark_master.startswith("local"):
+        spark_master = f"local[{cores}]"
 
     if src_dir not in sys.path:
         sys.path.insert(0, src_dir)
@@ -88,12 +97,27 @@ def create_spark_session(app_name: str = "mongo-comments-loader") -> SparkSessio
 
     builder = (
         SparkSession.builder.appName(app_name)
-        .master(config.spark_master)
+        .master(spark_master)
         .config("spark.python.worker.faulthandler.enabled", "true")
         .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
     )
 
-    if config.spark_master.startswith("local"):
+    if executor_cores is None:
+        executor_cores = cores
+
+    if executor_cores is not None:
+        builder = builder.config("spark.executor.cores", str(executor_cores))
+
+    if cores is not None:
+        builder = builder.config("spark.cores.max", str(cores))
+
+    if memory:
+        builder = (
+            builder.config("spark.driver.memory", memory)
+            .config("spark.executor.memory", memory)
+        )
+
+    if spark_master.startswith("local"):
         os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
         builder = (
             builder.config("spark.driver.host", "127.0.0.1")
