@@ -211,9 +211,8 @@ def _prompt_memory(prompt: str, default: str) -> str:
         print("Input memory harus format Spark, contoh: 2g, 4096m.", flush=True)
 
 
-def prompt_spark_resources() -> tuple[int, int, str]:
+def prompt_spark_resources() -> tuple[int, str]:
     default_total_cores = int(os.getenv("SPARK_CORES", os.getenv("SPARK_NUM_PARTITIONS", "4")))
-    default_executor_cores = int(os.getenv("SPARK_EXECUTOR_CORES", "1"))
     default_memory = os.getenv(
         "SPARK_MEMORY",
         os.getenv("SPARK_EXECUTOR_MEMORY", "2g"),
@@ -223,15 +222,8 @@ def prompt_spark_resources() -> tuple[int, int, str]:
     print("Masukkan resource Spark untuk preprocessing.", flush=True)
     print(f"Target Spark master: {spark_master}", flush=True)
     total_cores = _prompt_positive_int("Total core aplikasi", default=default_total_cores)
-    executor_cores = _prompt_positive_int(
-        "Core per executor",
-        default=min(default_executor_cores, total_cores),
-    )
-    while executor_cores > total_cores:
-        print("Core per executor tidak boleh lebih besar dari total core aplikasi.", flush=True)
-        executor_cores = _prompt_positive_int("Core per executor", default=total_cores)
     memory = _prompt_memory("Memory per executor/driver", default=default_memory)
-    return total_cores, executor_cores, memory
+    return total_cores, memory
 
 
 def resolve_text_column(df: DataFrame, candidates: Iterable[str] = TEXT_CANDIDATES) -> str:
@@ -550,11 +542,10 @@ def preprocess_and_save_comments_to_mongo(
 
 def main() -> None:
     load_project_env()
-    spark_cores, executor_cores, spark_memory = prompt_spark_resources()
+    spark_cores, spark_memory = prompt_spark_resources()
     spark = create_spark_session(
         app_name="mongo-comments-preprocess",
         cores=spark_cores,
-        executor_cores=executor_cores,
         memory=spark_memory,
     )
     source_col = os.getenv("SPARK_TEXT_COLUMN")
@@ -571,7 +562,6 @@ def main() -> None:
         f"app_id={spark.sparkContext.applicationId}, "
         f"master={spark.sparkContext.master}, "
         f"total_cores={spark_cores}, "
-        f"executor_cores={executor_cores}, "
         f"executor_memory={spark_memory}, "
         f"ui={spark.sparkContext.uiWebUrl or 'tidak tersedia'}",
         flush=True,

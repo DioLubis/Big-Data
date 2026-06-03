@@ -102,9 +102,6 @@ def create_spark_session(
         .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
     )
 
-    if executor_cores is None:
-        executor_cores = cores
-
     if executor_cores is not None:
         builder = builder.config("spark.executor.cores", str(executor_cores))
 

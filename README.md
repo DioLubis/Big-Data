@@ -93,7 +93,6 @@ Saat dijalankan, script akan meminta input resource Spark:
 ```text
 Target Spark master: spark://192.168.0.10:7077
 Total core aplikasi [4]:
-Core per executor [1]:
 Memory per executor/driver [2g]:
 ```
 
@@ -101,11 +100,10 @@ Tekan Enter untuk memakai default. Nilai default bisa diatur lewat `.env`:
 
 ```env
 SPARK_CORES=4
-SPARK_EXECUTOR_CORES=1
 SPARK_MEMORY=2g
 ```
 
-Kalau `SPARK_MASTER` berisi `spark://...`, preprocessing tetap dikirim ke Spark cluster tersebut. `SPARK_CORES` menjadi batas total core aplikasi, sedangkan `SPARK_EXECUTOR_CORES` adalah core per executor agar Spark bisa membagi executor ke beberapa worker.
+Kalau `SPARK_MASTER` berisi `spark://...`, preprocessing tetap dikirim ke Spark cluster tersebut. `SPARK_CORES` menjadi batas total core aplikasi, sedangkan core per executor dibiarkan memakai default Spark.
 
 ## Preprocessing Raw JSON Notebook
 
