@@ -11,10 +11,8 @@ from typing import Iterable, Optional
 
 from pymongo import MongoClient
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, lower, regexp_replace, trim, udf
-from pyspark.sql.types import StringType
-
-from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
+from pyspark.sql.functions import col, regexp_replace, trim, udf
+from pyspark.sql.types import StringType, StructField, StructType
 
 from mongo_comments_loader import (
     create_spark_session,
@@ -147,9 +145,6 @@ NON_TEXT_RE = re.compile(r"[^0-9a-zA-Z_\'\-\s]")
 REPEATED_CHAR_RE = re.compile(r"([a-zA-Z])\1{2,}")
 TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_\'-]*")
 EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]")
-
-factory = StemmerFactory()
-stemmer = factory.create_stemmer()
 
 
 TEXT_CANDIDATES: tuple[str, ...] = (
@@ -294,25 +289,24 @@ def normalize_without_stem(text: str) -> str:
     return " ".join(remove_stopwords(tokenize_comment(text)))
 
 
-def normalize_and_stem(text: str) -> str:
-    tokens = remove_stopwords(tokenize_comment(text))
-    stemmed = [stemmer.stem(token) for token in tokens]
-    return " ".join(token for token in stemmed if token)
+def preprocess_light(text: str) -> dict[str, str]:
+    tokens = tokenize_comment(text)
+    return {
+        "text_clean": " ".join(tokens),
+        "text_preprocessed": " ".join(remove_stopwords(tokens)),
+    }
 
 
-@udf(returnType=StringType())
-def clean_text_udf(text: Optional[str]) -> str:
-    return clean_text(text or "")
-
-
-@udf(returnType=StringType())
-def normalize_without_stem_udf(text: Optional[str]) -> str:
-    return normalize_without_stem(text or "")
-
-
-@udf(returnType=StringType())
-def normalize_and_stem_udf(text: Optional[str]) -> str:
-    return normalize_and_stem(text or "")
+@udf(
+    returnType=StructType(
+        [
+            StructField("text_clean", StringType(), nullable=False),
+            StructField("text_preprocessed", StringType(), nullable=False),
+        ]
+    )
+)
+def preprocess_light_udf(text):
+    return preprocess_light(text or "")
 
 
 def _sanitize_for_mongo(value):
@@ -356,9 +350,9 @@ def preprocess_comment_document(
     if not text_original:
         return None
 
-    text_clean = clean_text(text_original)
-    text_preprocessed = normalize_without_stem(text_original)
-    text_stemmed = normalize_and_stem(text_original)
+    light_result = preprocess_light(text_original)
+    text_clean = light_result["text_clean"]
+    text_preprocessed = light_result["text_preprocessed"]
 
     if not text_preprocessed:
         return None
@@ -371,7 +365,6 @@ def preprocess_comment_document(
     processed_document["text_original"] = text_original
     processed_document["text_clean"] = text_clean
     processed_document["text_preprocessed"] = text_preprocessed
-    processed_document["text_stemmed"] = text_stemmed
     return processed_document
 
 
@@ -401,13 +394,14 @@ def preprocess_comments_df(
 
     cleaned = (
         selected.withColumn("text_original", trim(col("text_original")))
-        .withColumn("text_clean", clean_text_udf(col("text_original")))
-        .withColumn("text_preprocessed", normalize_without_stem_udf(col("text_original")))
-        .withColumn("text_stemmed", normalize_and_stem_udf(col("text_original")))
         .withColumn(
             "text_original",
             regexp_replace(col("text_original"), r"\s+", " "),
         )
+        .withColumn("preprocess_result", preprocess_light_udf(col("text_original")))
+        .withColumn("text_clean", col("preprocess_result.text_clean"))
+        .withColumn("text_preprocessed", col("preprocess_result.text_preprocessed"))
+        .drop("preprocess_result")
     )
 
     processed = cleaned.filter(col("text_original").isNotNull() & (col("text_original") != ""))
@@ -423,7 +417,6 @@ def preprocess_comments_df(
         "text_original",
         "text_clean",
         "text_preprocessed",
-        "text_stemmed",
     )
 
 

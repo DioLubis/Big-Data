@@ -105,6 +105,8 @@ SPARK_MEMORY=2g
 
 Kalau `SPARK_MASTER` berisi `spark://...`, preprocessing tetap dikirim ke Spark cluster tersebut. `SPARK_CORES` menjadi batas total core aplikasi, sedangkan core per executor dibiarkan memakai default Spark.
 
+Preprocessing Spark memakai mode ringan tanpa stemming Sastrawi agar job lebih cepat. Output utama untuk training tetap memakai kolom `text_preprocessed`.
+
 ## Preprocessing Raw JSON Notebook
 
 Kalau memakai file raw dari notebook:
