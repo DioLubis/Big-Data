@@ -3,7 +3,7 @@
 Project ini dipakai untuk:
 - Mengambil komentar YouTube via YouTube Data API v3
 - Menyimpan data komentar ke MongoDB
-- Melakukan preprocessing teks bahasa Indonesia dengan Spark
+- Melakukan preprocessing teks bahasa Indonesia dengan satu core logic yang dipakai bersama oleh script lokal dan Spark
 - Melatih model sentimen sederhana berbasis TF-IDF + Logistic Regression
 
 ## Struktur Folder
@@ -105,7 +105,8 @@ SPARK_MEMORY=2g
 
 Kalau `SPARK_MASTER` berisi `spark://...`, preprocessing tetap dikirim ke Spark cluster tersebut. `SPARK_CORES` menjadi batas total core aplikasi, sedangkan core per executor dibiarkan memakai default Spark.
 
-Preprocessing Spark memakai mode ringan tanpa stemming Sastrawi agar job lebih cepat. Output utama untuk training tetap memakai kolom `text_preprocessed`.
+Preprocessing Spark memakai helper yang sama seperti workflow lokal, lalu dibungkus proses distribusi Spark agar cocok untuk data dari MongoDB.
+Hasil yang disimpan ke collection processed hanya berisi metadata penting dan `text_preprocessed`, jadi output lebih bersih dan tidak menduplikasi teks mentah.
 
 ## Preprocessing Raw JSON Notebook
 
@@ -128,7 +129,7 @@ notebooks\data\processed\comments_preprocessed_all_videos.csv
 notebooks\data\processed\comments_preprocessed_all_videos.jsonl
 ```
 
-Preprocessing ini khusus untuk komentar YouTube bahasa Indonesia:
+Preprocessing ini memakai core helper yang sama, lalu menambah fitur khusus raw JSON:
 - flatten struktur `raw_comment_threads`
 - ambil metadata penting komentar dan video
 - buang komentar kosong dan duplikat `comment_id`

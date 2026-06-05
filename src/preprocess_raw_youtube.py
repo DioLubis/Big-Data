@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from preprocess import (
-    clean_text,
     extract_text_features,
     normalize_and_stem,
-    normalize_without_stem,
+    preprocess_light,
 )
 
 
@@ -83,11 +82,12 @@ def iter_raw_comments(data: dict[str, Any]) -> Iterable[dict[str, Any]]:
 def preprocess_row(row: dict[str, Any], with_stem: bool = False) -> dict[str, Any]:
     text = str(row.get("text_original") or "")
     features = extract_text_features(text)
+    light_result = preprocess_light(text)
     stemmed = normalize_and_stem(text) if with_stem else ""
     return {
         **row,
-        "text_clean": clean_text(text),
-        "text_preprocessed": normalize_without_stem(text),
+        "text_clean": light_result["text_clean"],
+        "text_preprocessed": light_result["text_preprocessed"],
         "text_stemmed": stemmed,
         **features,
     }

@@ -222,3 +222,11 @@ def extract_text_features(text: str) -> dict[str, int | float]:
         "question_count": raw.count("?"),
         "uppercase_ratio": round(len(uppercase) / len(letters), 4) if letters else 0.0,
     }
+
+
+def preprocess_light(text: str) -> dict[str, str]:
+    tokens = tokenize_comment(text)
+    return {
+        "text_clean": " ".join(tokens),
+        "text_preprocessed": " ".join(remove_stopwords(tokens)),
+    }

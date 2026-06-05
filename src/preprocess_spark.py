@@ -2,149 +2,21 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import date, datetime
-from pathlib import Path
-import html
 import re
-import unicodedata
+from datetime import date, datetime
 from typing import Iterable, Optional
 
 from pymongo import MongoClient
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, regexp_replace, trim, udf
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import StringType
 
 from mongo_comments_loader import (
     create_spark_session,
     load_comments_spark_df,
     load_project_env,
 )
-
-
-STOPWORDS_ID = {
-    "ada",
-    "adalah",
-    "agar",
-    "akan",
-    "akhir",
-    "antara",
-    "apa",
-    "apabila",
-    "atau",
-    "bagai",
-    "bagaimana",
-    "bagi",
-    "bahwa",
-    "dalam",
-    "dan",
-    "dari",
-    "dengan",
-    "demi",
-    "di",
-    "dia",
-    "hal",
-    "ini",
-    "itu",
-    "jadi",
-    "juga",
-    "kami",
-    "kamu",
-    "kan",
-    "karena",
-    "ke",
-    "kemudian",
-    "kita",
-    "lagi",
-    "maka",
-    "mereka",
-    "nya",
-    "oleh",
-    "pada",
-    "para",
-    "saat",
-    "saja",
-    "saling",
-    "sama",
-    "saya",
-    "sebagai",
-    "sebab",
-    "secara",
-    "sedang",
-    "sehingga",
-    "seperti",
-    "serta",
-    "setelah",
-    "sudah",
-    "tanpa",
-    "telah",
-    "tentang",
-    "tersebut",
-    "tetapi",
-    "untuk",
-    "yang",
-}
-
-NEGATIONS = {"tidak", "bukan", "jangan", "belum", "tak", "kurang"}
-
-SLANG_MAP = {
-    "aja": "saja",
-    "ama": "sama",
-    "banget": "sangat",
-    "bgt": "sangat",
-    "bkn": "bukan",
-    "blm": "belum",
-    "br": "baru",
-    "buat": "untuk",
-    "cm": "cuma",
-    "cuma": "hanya",
-    "dah": "sudah",
-    "dg": "dengan",
-    "dgn": "dengan",
-    "dl": "dulu",
-    "dlm": "dalam",
-    "dr": "dari",
-    "emg": "memang",
-    "ga": "tidak",
-    "gak": "tidak",
-    "gk": "tidak",
-    "gw": "saya",
-    "gue": "saya",
-    "jd": "jadi",
-    "jg": "juga",
-    "kalo": "kalau",
-    "karna": "karena",
-    "kek": "seperti",
-    "kpd": "kepada",
-    "krn": "karena",
-    "lo": "kamu",
-    "lu": "kamu",
-    "ma": "sama",
-    "msh": "masih",
-    "ngga": "tidak",
-    "nggak": "tidak",
-    "org": "orang",
-    "pd": "pada",
-    "pemerentah": "pemerintah",
-    "pemerentahan": "pemerintahan",
-    "pengen": "ingin",
-    "sm": "sama",
-    "sma": "sama",
-    "tdk": "tidak",
-    "tp": "tapi",
-    "trs": "terus",
-    "udh": "sudah",
-    "utk": "untuk",
-    "yg": "yang",
-}
-
-URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
-MENTION_RE = re.compile(r"@\w+")
-HASHTAG_RE = re.compile(r"#(\w+)")
-HTML_ENTITY_RE = re.compile(r"&[a-z]+;|&#\d+;", re.IGNORECASE)
-NON_TEXT_RE = re.compile(r"[^0-9a-zA-Z_\'\-\s]")
-REPEATED_CHAR_RE = re.compile(r"([a-zA-Z])\1{2,}")
-TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_\'-]*")
-EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]")
+from preprocess import normalize_without_stem
 
 
 TEXT_CANDIDATES: tuple[str, ...] = (
@@ -234,79 +106,11 @@ def _essential_columns(df: DataFrame) -> list[str]:
     return [name for name in ESSENTIAL_METADATA_COLUMNS if name in df.columns]
 
 
-def normalize_unicode(text: str) -> str:
-    text = html.unescape(text or "")
-    text = unicodedata.normalize("NFKC", text)
-    return text.replace("\u200b", " ").replace("\ufeff", " ")
+def preprocess_text(text: str) -> str:
+    return normalize_without_stem(text or "")
 
 
-def reduce_repeated_chars(token: str, max_repeat: int = 2) -> str:
-    return REPEATED_CHAR_RE.sub(lambda match: match.group(1) * max_repeat, token)
-
-
-def normalize_token(token: str) -> str:
-    token = reduce_repeated_chars(token.casefold())
-    return SLANG_MAP.get(token, token)
-
-
-def looks_like_tail_noise(token: str) -> bool:
-    if len(token) < 5 or len(token) > 10:
-        return False
-    if any(char.isdigit() for char in token):
-        return True
-    letters = [char for char in token if char.isalpha()]
-    if len(letters) != len(token):
-        return False
-    return not any(char in "aiueo" for char in token)
-
-
-def tokenize_comment(text: str) -> list[str]:
-    text = normalize_unicode(text)
-    text = URL_RE.sub(" ", text)
-    text = MENTION_RE.sub(" ", text)
-    text = HASHTAG_RE.sub(r" \1 ", text)
-    text = HTML_ENTITY_RE.sub(" ", text)
-    text = EMOJI_RE.sub(" ", text)
-    text = NON_TEXT_RE.sub(" ", text)
-
-    tokens = [normalize_token(match.group(0)) for match in TOKEN_RE.finditer(text)]
-    while tokens and looks_like_tail_noise(tokens[-1]):
-        tokens.pop()
-    return tokens
-def remove_stopwords(tokens: Iterable[str]) -> list[str]:
-    return [
-        token
-        for token in tokens
-        if len(token) > 1 and (token not in STOPWORDS_ID or token in NEGATIONS)
-    ]
-
-
-def clean_text(text: str) -> str:
-    return " ".join(tokenize_comment(text))
-
-
-def normalize_without_stem(text: str) -> str:
-    return " ".join(remove_stopwords(tokenize_comment(text)))
-
-
-def preprocess_light(text: str) -> dict[str, str]:
-    tokens = tokenize_comment(text)
-    return {
-        "text_clean": " ".join(tokens),
-        "text_preprocessed": " ".join(remove_stopwords(tokens)),
-    }
-
-
-@udf(
-    returnType=StructType(
-        [
-            StructField("text_clean", StringType(), nullable=False),
-            StructField("text_preprocessed", StringType(), nullable=False),
-        ]
-    )
-)
-def preprocess_light_udf(text):
-    return preprocess_light(text or "")
+preprocess_text_udf = udf(preprocess_text, StringType())
 
 
 def _sanitize_for_mongo(value):
@@ -328,59 +132,6 @@ def _sanitize_for_mongo(value):
     return str(value)
 
 
-def _resolve_source_text(document: dict, source_col: str) -> str:
-    candidate = document.get(source_col)
-    if candidate is None:
-        candidate = document.get("text_original") or document.get("text") or ""
-    return str(candidate).strip()
-
-
-def preprocess_comment_document(
-    document: dict,
-    source_col: str,
-    seen_comment_ids: Optional[set[str]] = None,
-) -> Optional[dict]:
-    comment_id = str(document.get("comment_id") or "")
-    if seen_comment_ids is not None and comment_id:
-        if comment_id in seen_comment_ids:
-            return None
-        seen_comment_ids.add(comment_id)
-
-    text_original = _resolve_source_text(document, source_col)
-    if not text_original:
-        return None
-
-    light_result = preprocess_light(text_original)
-    text_clean = light_result["text_clean"]
-    text_preprocessed = light_result["text_preprocessed"]
-
-    if not text_preprocessed:
-        return None
-
-    processed_document: dict[str, object] = {}
-    for column_name in ESSENTIAL_METADATA_COLUMNS:
-        if column_name in document:
-            processed_document[column_name] = _sanitize_for_mongo(document.get(column_name))
-
-    processed_document["text_original"] = text_original
-    processed_document["text_clean"] = text_clean
-    processed_document["text_preprocessed"] = text_preprocessed
-    return processed_document
-
-
-def iter_preprocessed_documents(df: DataFrame, source_col: str) -> Iterable[dict]:
-    seen_comment_ids: set[str] = set()
-    for row in df.toLocalIterator():
-        document = _sanitize_for_mongo(row.asDict(recursive=True))
-        processed_document = preprocess_comment_document(
-            document,
-            source_col=source_col,
-            seen_comment_ids=seen_comment_ids,
-        )
-        if processed_document is not None:
-            yield processed_document
-
-
 def preprocess_comments_df(
     df: DataFrame,
     source_col: Optional[str] = None,
@@ -398,10 +149,7 @@ def preprocess_comments_df(
             "text_original",
             regexp_replace(col("text_original"), r"\s+", " "),
         )
-        .withColumn("preprocess_result", preprocess_light_udf(col("text_original")))
-        .withColumn("text_clean", col("preprocess_result.text_clean"))
-        .withColumn("text_preprocessed", col("preprocess_result.text_preprocessed"))
-        .drop("preprocess_result")
+        .withColumn("text_preprocessed", preprocess_text_udf(col("text_original")))
     )
 
     processed = cleaned.filter(col("text_original").isNotNull() & (col("text_original") != ""))
@@ -414,8 +162,6 @@ def preprocess_comments_df(
 
     return processed.select(
         *[name for name in ESSENTIAL_METADATA_COLUMNS if name in processed.columns],
-        "text_original",
-        "text_clean",
         "text_preprocessed",
     )
 
@@ -425,8 +171,8 @@ def save_processed_comments_to_mongo(
     mongo_uri: str,
     mongo_db: str,
     mongo_collection: str,
-    batch_size: int = 1000,
-) -> int:
+    batch_size: int = 200,
+) -> tuple[int, int]:
     if not mongo_uri or not mongo_db or not mongo_collection:
         raise ValueError("Konfigurasi MongoDB untuk output preprocessing belum lengkap")
 
@@ -436,51 +182,14 @@ def save_processed_comments_to_mongo(
         cached_df.unpersist()
         raise ValueError("Tidak ada data yang lolos preprocessing untuk disimpan ke MongoDB")
 
+    inserted_count = 0
+    batch: list[dict[str, object]] = []
+
     with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
-        client.admin.command("ping")
         client[mongo_db][mongo_collection].delete_many({})
-
-    inserted_count = 0
-
-    def insert_partition(rows) -> None:
-        batch: list[dict] = []
-        with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
-            collection = client[mongo_db][mongo_collection]
-            for row in rows:
-                document = _sanitize_for_mongo(row.asDict(recursive=True))
-                document.pop("_id", None)
-                batch.append(document)
-
-                if len(batch) >= batch_size:
-                    collection.insert_many(batch, ordered=False)
-                    batch.clear()
-
-            if batch:
-                collection.insert_many(batch, ordered=False)
-
-    cached_df.foreachPartition(insert_partition)
-    inserted_count = processed_rows
-
-    cached_df.unpersist()
-    return inserted_count
-
-
-def save_processed_comments_to_mongo_serial(
-    df: DataFrame,
-    mongo_uri: str,
-    mongo_db: str,
-    mongo_collection: str,
-    batch_size: int = 1000,
-) -> int:
-    if not mongo_uri or not mongo_db or not mongo_collection:
-        raise ValueError("Konfigurasi MongoDB untuk output preprocessing belum lengkap")
-
-    inserted_count = 0
-    batch: list[dict] = []
-
-    with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
         collection = client[mongo_db][mongo_collection]
-        for row in df.toLocalIterator():
+
+        for row in cached_df.toLocalIterator():
             document = _sanitize_for_mongo(row.asDict(recursive=True))
             document.pop("_id", None)
             batch.append(document)
@@ -494,43 +203,8 @@ def save_processed_comments_to_mongo_serial(
             result = collection.insert_many(batch, ordered=False)
             inserted_count += len(result.inserted_ids)
 
-    return inserted_count
-
-
-def preprocess_and_save_comments_to_mongo(
-    df: DataFrame,
-    source_col: str,
-    mongo_uri: str,
-    mongo_db: str,
-    mongo_collection: str,
-    batch_size: int = 200,
-) -> tuple[int, int]:
-    if not mongo_uri or not mongo_db or not mongo_collection:
-        raise ValueError("Konfigurasi MongoDB untuk output preprocessing belum lengkap")
-
-    inserted_count = 0
-    processed_count = 0
-    batch: list[dict] = []
-
-    with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
-        client.admin.command("ping")
-        client[mongo_db][mongo_collection].delete_many({})
-        collection = client[mongo_db][mongo_collection]
-
-        for document in iter_preprocessed_documents(df, source_col=source_col):
-            processed_count += 1
-            batch.append(document)
-
-            if len(batch) >= batch_size:
-                result = collection.insert_many(batch, ordered=False)
-                inserted_count += len(result.inserted_ids)
-                batch.clear()
-
-        if batch:
-            result = collection.insert_many(batch, ordered=False)
-            inserted_count += len(result.inserted_ids)
-
-    return processed_count, inserted_count
+    cached_df.unpersist()
+    return processed_rows, inserted_count
 
 
 def main() -> None:
@@ -580,9 +254,7 @@ def main() -> None:
         flush=True,
     )
 
-    processed_df = preprocess_comments_df(raw_df, source_col=resolved_source_col).repartition(
-        effective_partitions
-    )
+    processed_df = preprocess_comments_df(raw_df, source_col=resolved_source_col).repartition(effective_partitions)
 
     preview_rows = [row.asDict(recursive=True) for row in processed_df.limit(5).collect()]
     if preview_rows:
@@ -594,14 +266,13 @@ def main() -> None:
 
     insert_batch_size = int(os.getenv("MONGO_INSERT_BATCH_SIZE", "200"))
 
-    inserted_count = save_processed_comments_to_mongo(
+    processed_count, inserted_count = save_processed_comments_to_mongo(
         processed_df,
         mongo_uri=mongo_uri,
         mongo_db=mongo_db,
         mongo_collection=processed_collection,
         batch_size=insert_batch_size,
     )
-    processed_count = inserted_count
     print(
         "Data hasil preprocessing disimpan ke MongoDB: "
         f"{mongo_db}.{processed_collection} "
