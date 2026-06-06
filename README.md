@@ -88,6 +88,24 @@ Jalankan preprocessing:
 python src\preprocess_spark.py
 ```
 
+Jalankan labeling sentiment Spark + IndoBERT dari collection hasil preprocessing:
+
+```powershell
+python label_sentiment_spark.py
+```
+
+Labeling membaca `text_preprocessed` tanpa preprocessing tambahan dan langsung
+menulis hasil ke `MONGO_LABELED_COLLECTION`. Konfigurasi utamanya:
+
+```env
+MONGO_LABELED_COLLECTION=comments_labeled
+SENTIMENT_MODEL=w11wo/indonesian-roberta-base-sentiment-classifier
+SENTIMENT_BATCH_SIZE=16
+SENTIMENT_DEVICE=-1
+```
+
+Gunakan `SENTIMENT_DEVICE=-1` untuk CPU atau `0` untuk GPU pertama.
+
 Saat dijalankan, script akan meminta input resource Spark:
 
 ```text

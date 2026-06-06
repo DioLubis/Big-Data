@@ -8,5 +8,7 @@ pyarrow==17.0.0
 scikit-learn==1.5.1
 joblib==1.4.2
 Sastrawi==1.0.1
+transformers>=4.46.0,<5.0.0
+torch>=2.4.0,<3.0.0
 jupyter==1.0.0
 ipykernel==6.29.5
