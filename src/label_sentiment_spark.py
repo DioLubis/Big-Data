@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Iterable, Iterator
 
-from pymongo import MongoClient
+from pymongo import MongoClient, ReplaceOne
+from pymongo.errors import BulkWriteError
 from pyspark.sql import Row, SparkSession
 
 from mongo_comments_loader import (
@@ -72,6 +73,57 @@ def _load_processed_documents(
     return documents
 
 
+def _prepare_output_collection(
+    mongo_uri: str,
+    mongo_db: str,
+    collection_name: str,
+) -> tuple[int, int]:
+    """Remove retry duplicates and enforce one labeled document per comment."""
+    removed_count = 0
+
+    with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
+        collection = client[mongo_db][collection_name]
+        duplicate_groups = collection.aggregate(
+            [
+                {"$match": {"comment_id": {"$exists": True, "$ne": None}}},
+                {
+                    "$group": {
+                        "_id": "$comment_id",
+                        "document_ids": {"$push": "$_id"},
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$match": {"count": {"$gt": 1}}},
+            ],
+            allowDiskUse=True,
+        )
+
+        for group in duplicate_groups:
+            duplicate_ids = group["document_ids"][1:]
+            if duplicate_ids:
+                removed_count += collection.delete_many(
+                    {"_id": {"$in": duplicate_ids}}
+                ).deleted_count
+
+        collection.create_index("comment_id", unique=True)
+        existing_count = collection.count_documents({})
+
+    return removed_count, existing_count
+
+
+def _load_existing_comment_ids(
+    mongo_uri: str,
+    mongo_db: str,
+    collection_name: str,
+) -> set[str]:
+    with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
+        return {
+            str(comment_id)
+            for comment_id in client[mongo_db][collection_name].distinct("comment_id")
+            if comment_id is not None
+        }
+
+
 def _normalize_label(raw_label: Any) -> str:
     label = str(raw_label or "").strip().lower()
     label = LABEL_ALIASES.get(label, label)
@@ -105,6 +157,36 @@ def _batched(rows: Iterable[Row], batch_size: int) -> Iterator[list[Row]]:
         yield batch
 
 
+def _upsert_documents(collection, documents: list[dict[str, Any]]) -> None:
+    operations = [
+        ReplaceOne(
+            {"comment_id": document["comment_id"]},
+            document,
+            upsert=True,
+        )
+        for document in documents
+    ]
+    try:
+        collection.bulk_write(operations, ordered=False)
+    except BulkWriteError as exc:
+        non_duplicate_errors = [
+            error
+            for error in exc.details.get("writeErrors", [])
+            if error.get("code") != 11000
+        ]
+        if non_duplicate_errors:
+            raise
+
+        # A concurrent Spark retry may win the upsert race. Replace again now
+        # that the unique comment_id document exists.
+        for document in documents:
+            collection.replace_one(
+                {"comment_id": document["comment_id"]},
+                document,
+                upsert=True,
+            )
+
+
 def label_partition(
     rows: Iterable[Row],
     *,
@@ -114,6 +196,7 @@ def label_partition(
     model_name: str,
     batch_size: int,
     device: int,
+    max_length: int,
 ) -> Iterator[tuple[int, int]]:
     """Label and insert one Spark partition, loading the model only once."""
     from transformers import pipeline
@@ -152,6 +235,7 @@ def label_partition(
                 predictions = classifier(
                     texts,
                     truncation=True,
+                    max_length=max_length,
                     batch_size=batch_size,
                 )
                 for index, prediction in zip(non_empty_indexes, predictions):
@@ -171,9 +255,9 @@ def label_partition(
                 document["labeled_at"] = labeled_at
 
             if documents:
-                result = collection.insert_many(documents, ordered=False)
+                _upsert_documents(collection, documents)
                 processed_count += len(documents)
-                inserted_count += len(result.inserted_ids)
+                inserted_count += len(documents)
 
     yield processed_count, inserted_count
 
@@ -196,6 +280,7 @@ def main() -> None:
     num_partitions = int(os.getenv("SPARK_NUM_PARTITIONS", "4"))
     batch_size = int(os.getenv("SENTIMENT_BATCH_SIZE", "16"))
     device = int(os.getenv("SENTIMENT_DEVICE", "-1"))
+    max_length = int(os.getenv("SENTIMENT_MAX_LENGTH", "512"))
 
     if not mongo_uri:
         raise ValueError("MONGO_URI belum diisi di .env")
@@ -207,6 +292,8 @@ def main() -> None:
         raise ValueError("MONGO_LABELED_COLLECTION belum diisi di .env")
     if batch_size < 1:
         raise ValueError("SENTIMENT_BATCH_SIZE harus lebih besar dari 0")
+    if max_length < 1:
+        raise ValueError("SENTIMENT_MAX_LENGTH harus lebih besar dari 0")
 
     spark = create_spark_session()
     print(
@@ -241,10 +328,39 @@ def main() -> None:
                 "Kolom text_preprocessed tidak ditemukan di collection sumber."
             )
 
-        input_df = spark.createDataFrame(documents).repartition(num_partitions)
+        if not all(document.get("comment_id") for document in documents):
+            raise ValueError(
+                "Semua dokumen sumber harus memiliki comment_id untuk upsert idempotent."
+            )
 
-        with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
-            client[mongo_db][output_collection].delete_many({})
+        removed_duplicates, existing_count = _prepare_output_collection(
+            mongo_uri,
+            mongo_db,
+            output_collection,
+        )
+        existing_comment_ids = _load_existing_comment_ids(
+            mongo_uri,
+            mongo_db,
+            output_collection,
+        )
+        pending_documents = [
+            document
+            for document in documents
+            if str(document["comment_id"]) not in existing_comment_ids
+        ]
+        print(
+            "Status collection output sebelum labeling: "
+            f"existing={existing_count}, "
+            f"duplikat_dihapus={removed_duplicates}, "
+            f"belum_dilabel={len(pending_documents)}",
+            flush=True,
+        )
+
+        if not pending_documents:
+            print("Semua komentar sudah memiliki label.", flush=True)
+            return
+
+        input_df = spark.createDataFrame(pending_documents).repartition(num_partitions)
 
         partition_labeler = partial(
             label_partition,
@@ -254,6 +370,7 @@ def main() -> None:
             model_name=model_name,
             batch_size=batch_size,
             device=device,
+            max_length=max_length,
         )
         stats = input_df.rdd.mapPartitions(partition_labeler).collect()
         processed_count = sum(item[0] for item in stats)

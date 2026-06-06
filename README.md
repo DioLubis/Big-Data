@@ -95,13 +95,17 @@ python label_sentiment_spark.py
 ```
 
 Labeling membaca `text_preprocessed` tanpa preprocessing tambahan dan langsung
-menulis hasil ke `MONGO_LABELED_COLLECTION`. Konfigurasi utamanya:
+menulis hasil ke `MONGO_LABELED_COLLECTION`. Penulisan menggunakan upsert
+berdasarkan `comment_id`, sehingga retry Spark tidak membuat duplikat. Kalau
+proses dijalankan ulang, script hanya melabel komentar yang belum ada di
+collection output. Konfigurasi utamanya:
 
 ```env
 MONGO_LABELED_COLLECTION=comments_labeled
 SENTIMENT_MODEL=w11wo/indonesian-roberta-base-sentiment-classifier
 SENTIMENT_BATCH_SIZE=16
 SENTIMENT_DEVICE=-1
+SENTIMENT_MAX_LENGTH=512
 ```
 
 Gunakan `SENTIMENT_DEVICE=-1` untuk CPU atau `0` untuk GPU pertama.
