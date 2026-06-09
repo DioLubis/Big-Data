@@ -13,7 +13,8 @@ from pyspark.ml.classification import LogisticRegression, NaiveBayes
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.ml.feature import HashingTF, IDF, RegexTokenizer, StringIndexer
 from pyspark.sql import DataFrame, Row, SparkSession
-from pyspark.sql.functions import col, lit, monotonically_increasing_id, rand, udf
+from pyspark.sql.functions import col, lit, monotonically_increasing_id, rand, row_number, udf
+from pyspark.sql.window import Window
 
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
@@ -33,10 +34,12 @@ MONGO_RESULTS_COLLECTION = "sentiment_model_results"
 VALID_LABELS = ("positive", "neutral", "negative")
 
 
+# Load file .env untuk konfigurasi environment.
 def load_env() -> None:
     load_project_env()
 
 
+# Menerima input angka bulat positif dari user dengan nilai default.
 def _prompt_positive_int(prompt: str, default: int) -> int:
     while True:
         try:
@@ -59,6 +62,7 @@ def _prompt_positive_int(prompt: str, default: int) -> int:
         print("Input harus lebih besar dari 0.", flush=True)
 
 
+# Menerima input memori Spark dan memvalidasi formatnya.
 def _prompt_memory(prompt: str, default: str) -> str:
     pattern = re.compile(r"^\d+[kmgKMG]$")
 
@@ -77,6 +81,7 @@ def _prompt_memory(prompt: str, default: str) -> str:
         print("Input memory harus format Spark, contoh: 2g, 4096m.", flush=True)
 
 
+# Membuat dan mengonfigurasi Spark Session berdasarkan input resource user.
 def create_spark_session() -> SparkSession:
     spark_master = os.getenv("SPARK_MASTER", "local[*]").strip()
     default_cores = int(os.getenv("SPARK_CORES", os.getenv("SPARK_NUM_PARTITIONS", "4")))
@@ -97,6 +102,7 @@ def create_spark_session() -> SparkSession:
     )
 
 
+# Mengambil dan memvalidasi konfigurasi MongoDB dari environment.
 def _require_mongo_config() -> tuple[str, str, str]:
     mongo_uri = os.getenv("MONGO_URI", "").strip()
     mongo_db = os.getenv("MONGO_DB", "").strip()
@@ -115,12 +121,14 @@ def _require_mongo_config() -> tuple[str, str, str]:
     return mongo_uri, mongo_db, labeled_collection
 
 
+# Konversi dict atau list ke format string JSON agar kompatibel dengan Spark.
 def _normalize_value_for_spark(value):
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, default=str)
     return value
 
 
+# Load data komentar berlabel dari MongoDB ke DataFrame Spark.
 def load_labeled_comments(spark: SparkSession) -> DataFrame:
     mongo_uri, mongo_db, labeled_collection = _require_mongo_config()
     projection = {
@@ -170,6 +178,7 @@ def load_labeled_comments(spark: SparkSession) -> DataFrame:
     return df
 
 
+# Membuat pipeline model ML (Logistic Regression / Naive Bayes) dengan text processing.
 def build_pipeline(model_name: str) -> Pipeline:
     tokenizer = RegexTokenizer(
         inputCol=TEXT_COL,
@@ -181,7 +190,7 @@ def build_pipeline(model_name: str) -> Pipeline:
     hashing_tf = HashingTF(
         inputCol="tokens",
         outputCol="raw_features",
-        numFeatures=1 << 18,
+        numFeatures=1 << 15,  # Dibatasi 32768 fitur untuk meminimalkan overfitting
     )
     idf = IDF(inputCol="raw_features", outputCol="features")
     label_indexer = StringIndexer(
@@ -197,8 +206,8 @@ def build_pipeline(model_name: str) -> Pipeline:
             labelCol="label_index",
             predictionCol="prediction_index",
             maxIter=100,
-            regParam=0.0,
-            elasticNetParam=0.0,
+            regParam=0.05,        # Ditambahkan regularisasi L1/L2
+            elasticNetParam=0.1,  # Rasio L1/L2 regularization untuk memotong fitur yang tidak relevan
             family="multinomial",
         )
     elif normalized_name in {"naive_bayes", "naive bayes", "nb"}:
@@ -215,6 +224,7 @@ def build_pipeline(model_name: str) -> Pipeline:
     return Pipeline(stages=[tokenizer, hashing_tf, idf, label_indexer, classifier])
 
 
+# Map index prediksi numerik kembali ke label teks (positive, neutral, negative).
 def _with_prediction_label(predictions: DataFrame, labels: list[str]) -> DataFrame:
     def map_prediction(index):
         if index is None:
@@ -231,6 +241,7 @@ def _with_prediction_label(predictions: DataFrame, labels: list[str]) -> DataFra
     )
 
 
+# Menhitung precision, recall, f1-score, support, dan akurasi model.
 def _classification_report(predictions: DataFrame) -> str:
     labels = list(VALID_LABELS)
     total = predictions.count()
@@ -286,6 +297,7 @@ def _classification_report(predictions: DataFrame) -> str:
     return "\n".join(lines)
 
 
+# Membuat visualisasi confusion matrix dalam bentuk teks.
 def _confusion_matrix(predictions: DataFrame) -> str:
     labels = list(VALID_LABELS)
     rows = {
@@ -301,6 +313,24 @@ def _confusion_matrix(predictions: DataFrame) -> str:
     return "\n".join(lines)
 
 
+# Menyeleksi kolom hasil prediksi untuk disimpan.
+def _prepare_output_predictions(
+    predictions: DataFrame,
+    model_name: str,
+    dataset_name: str,
+    fold: str,
+) -> DataFrame:
+    return predictions.select(
+        lit(model_name).alias("model_name"),
+        lit(dataset_name).alias("dataset_name"),
+        lit(fold).alias("fold"),
+        col(TEXT_COL),
+        col(LABEL_COL),
+        col("prediction"),
+    )
+
+
+# Menyimpan data hasil prediksi ke MongoDB secara bulk per partisi.
 def save_predictions(prediction_df: DataFrame) -> None:
     mongo_uri, mongo_db, _ = _require_mongo_config()
 
@@ -331,22 +361,7 @@ def save_predictions(prediction_df: DataFrame) -> None:
     )
 
 
-def _prepare_output_predictions(
-    predictions: DataFrame,
-    model_name: str,
-    dataset_name: str,
-    fold: str,
-) -> DataFrame:
-    return predictions.select(
-        lit(model_name).alias("model_name"),
-        lit(dataset_name).alias("dataset_name"),
-        lit(fold).alias("fold"),
-        col(TEXT_COL),
-        col(LABEL_COL),
-        col("prediction"),
-    )
-
-
+# Latih model, evaluasi data train/val/test, dan simpan hasilnya ke MongoDB.
 def train_and_evaluate_pipeline(
     pipeline: Pipeline,
     train_df: DataFrame,
@@ -391,6 +406,7 @@ def train_and_evaluate_pipeline(
         predictions.unpersist()
 
 
+# Mengambil sample acak sejumlah n untuk label tertentu.
 def _exact_label_sample(df: DataFrame, label: str, n: int) -> DataFrame:
     return (
         df.filter(col(LABEL_COL) == label)
@@ -399,6 +415,40 @@ def _exact_label_sample(df: DataFrame, label: str, n: int) -> DataFrame:
     )
 
 
+# Melakukan split data tersstratifikasi secara presisi (exact split) agar jumlah baris train, val, dan test sesuai target.
+def _stratified_exact_split(df: DataFrame, train_ratio: float, val_ratio: float, seed: int) -> tuple[DataFrame, DataFrame, DataFrame]:
+    window_spec = Window.partitionBy(LABEL_COL).orderBy(rand(seed))
+    df_ranked = df.withColumn("row_num", row_number().over(window_spec))
+
+    label_counts = {row[LABEL_COL]: row["count"] for row in df.groupBy(LABEL_COL).count().collect()}
+
+    train_cond = None
+    val_cond = None
+    test_cond = None
+
+    for label in VALID_LABELS:
+        count = label_counts.get(label, 0)
+        if count == 0:
+            continue
+        train_limit = int(round(count * train_ratio))
+        val_limit = int(round(count * val_ratio))
+
+        c_train = (col(LABEL_COL) == label) & (col("row_num") <= train_limit)
+        c_val = (col(LABEL_COL) == label) & (col("row_num") > train_limit) & (col("row_num") <= train_limit + val_limit)
+        c_test = (col(LABEL_COL) == label) & (col("row_num") > train_limit + val_limit)
+
+        train_cond = c_train if train_cond is None else train_cond | c_train
+        val_cond = c_val if val_cond is None else val_cond | c_val
+        test_cond = c_test if test_cond is None else test_cond | c_test
+
+    train_df = df_ranked.filter(train_cond).drop("row_num")
+    val_df = df_ranked.filter(val_cond).drop("row_num")
+    test_df = df_ranked.filter(test_cond).drop("row_num")
+
+    return train_df, val_df, test_df
+
+
+# Membuat dataset eksperimen (10k pure, 10k + sisa negative, dan 15k full) dengan split data tersstratifikasi.
 def _build_experiment_datasets(df: DataFrame) -> dict[str, tuple[DataFrame, DataFrame, DataFrame]]:
     positive_df = _exact_label_sample(df, "positive", 2640)
     neutral_df = _exact_label_sample(df, "neutral", 3324)
@@ -420,8 +470,8 @@ def _build_experiment_datasets(df: DataFrame) -> dict[str, tuple[DataFrame, Data
     print(f"sisa negative untuk test tambahan={discarded_negative_df.count()}", flush=True)
     print(f"15.516 full={dataset_full.count()}", flush=True)
 
-    train_10k, val_10k, test_10k = dataset_10k.randomSplit([0.60, 0.15, 0.25], seed=SEED)
-    train_full, val_full, test_full = dataset_full.randomSplit([0.60, 0.15, 0.25], seed=SEED)
+    train_10k, val_10k, test_10k = _stratified_exact_split(dataset_10k, 0.60, 0.15, seed=SEED)
+    train_full, val_full, test_full = _stratified_exact_split(dataset_full, 0.60, 0.15, seed=SEED)
     test_10k_plus_discarded = test_10k.unionByName(discarded_negative_df)
 
     return {
@@ -435,6 +485,7 @@ def _build_experiment_datasets(df: DataFrame) -> dict[str, tuple[DataFrame, Data
     }
 
 
+# Main program untuk menjalankan semua eksperimen.
 def main() -> None:
     load_env()
     spark = create_spark_session()
