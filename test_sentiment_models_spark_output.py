@@ -29,7 +29,7 @@ from mongo_comments_loader import (  # noqa: E402
 SEED = 42
 TEXT_COL = "text_preprocessed"
 LABEL_COL = "label"
-RESULTS_COLLECTION = "sentiment_model_results"
+MONGO_RESULTS_COLLECTION = "sentiment_model_results"
 VALID_LABELS = ("positive", "neutral", "negative")
 
 
@@ -308,7 +308,7 @@ def save_predictions(prediction_df: DataFrame) -> None:
         batch: list[dict[str, object]] = []
         inserted = 0
         with MongoClient(mongo_uri, serverSelectionTimeoutMS=10000) as client:
-            collection = client[mongo_db][RESULTS_COLLECTION]
+            collection = client[mongo_db][MONGO_RESULTS_COLLECTION]
             for row in rows:
                 document = row.asDict(recursive=True)
                 batch.append(document)
@@ -325,7 +325,7 @@ def save_predictions(prediction_df: DataFrame) -> None:
 
     total_inserted = sum(prediction_df.rdd.mapPartitions(insert_partition).collect())
     print(
-        f"Prediksi disimpan ke MongoDB: {mongo_db}.{RESULTS_COLLECTION}; "
+        f"Prediksi disimpan ke MongoDB: {mongo_db}.{MONGO_RESULTS_COLLECTION}; "
         f"inserted={total_inserted}",
         flush=True,
     )
