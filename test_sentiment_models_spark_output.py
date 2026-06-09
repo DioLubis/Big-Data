@@ -11,7 +11,7 @@ from pymongo import MongoClient
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import LogisticRegression, NaiveBayes
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-from pyspark.ml.feature import HashingTF, IDF, RegexTokenizer, StringIndexer
+from pyspark.ml.feature import CountVectorizer, IDF, RegexTokenizer, StringIndexer, NGram, VectorAssembler
 from pyspark.sql import DataFrame, Row, SparkSession
 from pyspark.sql.functions import col, lit, monotonically_increasing_id, rand, row_number, udf
 from pyspark.sql.window import Window
@@ -187,30 +187,42 @@ def build_pipeline(model_name: str) -> Pipeline:
         gaps=True,
         minTokenLength=2,
     )
-    hashing_tf = HashingTF(
-        inputCol="tokens",
-        outputCol="raw_features",
-        numFeatures=1 << 15,  # Dibatasi 32768 fitur untuk meminimalkan overfitting
-    )
-    idf = IDF(inputCol="raw_features", outputCol="features")
+    
     label_indexer = StringIndexer(
         inputCol=LABEL_COL,
         outputCol="label_index",
         handleInvalid="skip",
     )
-
+    
     normalized_name = model_name.strip().lower()
+    stages = [tokenizer]
+    
     if normalized_name in {"logistic_regression", "logistic regression", "lr"}:
+        # Logistic Regression: Unigrams + Bigrams, minDF=10.0 to strongly prune features, 10% L1 penalty
+        ngram = NGram(n=2, inputCol="tokens", outputCol="bigrams")
+        cv_unigram = CountVectorizer(inputCol="tokens", outputCol="unigram_features", vocabSize=8000, minDF=10.0)
+        cv_bigram = CountVectorizer(inputCol="bigrams", outputCol="bigram_features", vocabSize=8000, minDF=10.0)
+        assembler = VectorAssembler(inputCols=["unigram_features", "bigram_features"], outputCol="raw_features")
+        idf = IDF(inputCol="raw_features", outputCol="features")
+        
         classifier = LogisticRegression(
             featuresCol="features",
             labelCol="label_index",
             predictionCol="prediction_index",
             maxIter=100,
-            regParam=0.05,        # Ditambahkan regularisasi L1/L2
-            elasticNetParam=0.1,  # Rasio L1/L2 regularization untuk memotong fitur yang tidak relevan
+            regParam=0.03,        # Optimized regularization parameter
+            elasticNetParam=0.1,  # 10% L1, 90% L2
             family="multinomial",
         )
+        stages.extend([ngram, cv_unigram, cv_bigram, assembler, idf, label_indexer, classifier])
+        
     elif normalized_name in {"naive_bayes", "naive bayes", "nb"}:
+        # Naive Bayes: Unigrams + Bigrams, minDF=3.0, using raw counts directly (no IDF)
+        ngram = NGram(n=2, inputCol="tokens", outputCol="bigrams")
+        cv_unigram = CountVectorizer(inputCol="tokens", outputCol="unigram_features", vocabSize=8000, minDF=3.0)
+        cv_bigram = CountVectorizer(inputCol="bigrams", outputCol="bigram_features", vocabSize=8000, minDF=3.0)
+        assembler = VectorAssembler(inputCols=["unigram_features", "bigram_features"], outputCol="features")
+        
         classifier = NaiveBayes(
             featuresCol="features",
             labelCol="label_index",
@@ -218,10 +230,12 @@ def build_pipeline(model_name: str) -> Pipeline:
             modelType="multinomial",
             smoothing=1.0,
         )
+        stages.extend([ngram, cv_unigram, cv_bigram, assembler, label_indexer, classifier])
+        
     else:
         raise ValueError(f"Model tidak dikenali: {model_name}")
 
-    return Pipeline(stages=[tokenizer, hashing_tf, idf, label_indexer, classifier])
+    return Pipeline(stages=stages)
 
 
 # Map index prediksi numerik kembali ke label teks (positive, neutral, negative).
@@ -380,7 +394,7 @@ def train_and_evaluate_pipeline(
     )
 
     fitted_pipeline = pipeline.fit(train_df)
-    label_indexer_model = fitted_pipeline.stages[3]
+    label_indexer_model = fitted_pipeline.stages[-2]
     labels = list(label_indexer_model.labels)
 
     for fold, fold_df in (
