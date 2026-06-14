@@ -1,255 +1,167 @@
-# Analisis Sentimen Komentar YouTube
+# Spark Indonesian Comment Preprocessing
 
-Project ini dipakai untuk:
-- Mengambil komentar YouTube via YouTube Data API v3
-- Menyimpan data komentar ke MongoDB
-- Melakukan preprocessing teks bahasa Indonesia dengan satu core logic yang dipakai bersama oleh script lokal dan Spark
-- Melatih model sentimen sederhana berbasis TF-IDF + Logistic Regression
+Pipeline utama tersedia sebagai notebook mandiri
+`analisis_sentimen_spark_mongodb.ipynb` dan script `src/preprocess_spark.py`.
+Keduanya membaca komentar
+**hanya dari MongoDB** menggunakan MongoDB Spark Connector, memprosesnya dengan
+PySpark, lalu menyimpan hasil dan report **hanya ke MongoDB**.
 
-## Struktur Folder
+Sumber teks selalu `text_original`. Output teks final hanya `text_stemmed`.
+Kolom turunan lama seperti `text_clean` dan `text_preprocessed` tidak digunakan
+sebagai sumber dan tidak disimpan ke collection output.
 
-- `data/raw/`: data mentah hasil fetch
-- `data/processed/`: data setelah preprocessing atau labeling
-- `models/`: model dan vectorizer tersimpan
-- `notebooks/`: notebook untuk workflow bertahap
-- `src/`: kode reusable untuk fetch, preprocessing, dan training
+## Proses
+
+- Validasi collection dan `text_original`
+- Audit missing value, duplikasi, label, panjang komentar, emoji, URL, mention, dan hashtag
+- HTML unescape, perbaikan encoding `ftfy`, Unicode NFKC, zero-width removal
+- Ekstraksi fitur sebelum cleaning
+- Emoji menjadi token sentimen
+- URL menjadi `url_token`, mention menjadi `user_mention`
+- Ekspansi hashtag seperti `#TolakRUUTNI` menjadi `tolak ruu tni`
+- Normalisasi slang berbasis token menggunakan Spark broadcast variable
+- Stopword removal yang mempertahankan negasi, intensifier, domain term, dan kata sentimen
+- Stemming Sastrawi dengan lazy-loaded stemmer per executor dan whitelist
+- Penandaan duplikasi berdasarkan `text_stemmed`
+- Penyimpanan hasil dan report ke MongoDB
+
+## Output
+
+Collection output mempertahankan semua metadata input, termasuk `_id`,
+`comment_id`, `thread_id`, `video_id`, `author`, `label`, dan `text_original`.
+Pipeline menambahkan:
+
+- `text_stemmed` sebagai satu-satunya output teks final
+- `tokens`
+- `normalized_token_count`
+- fitur audit seperti `emoji_count`, `url_count`, `mention_count`, dan `hashtag_count`
+- `profanity_count`, `domain_term_count`, dan indikator fitur
+- `is_duplicate_text`
+- `preprocessing_version`
+- `processed_at`
 
 ## Setup
-
-### 1. Buat virtual environment
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Kalau PowerShell menolak activate script:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-```
-
-### 2. Siapkan file `.env`
-
-Salin `.env.example` menjadi `.env`, lalu isi variabel yang dibutuhkan.
-
-Contoh variabel utama:
+Isi `.env`:
 
 ```env
-YOUTUBE_API_KEY=...
-YOUTUBE_VIDEO_IDS=id_video_1,id_video_2,id_video_3
-MAX_COMMENTS=
+MONGO_URI=mongodb://localhost:27017
+MONGO_DATABASE=analisis_sentimen
+MONGO_INPUT_COLLECTION=comments_labeled
+MONGO_OUTPUT_COLLECTION=comments_stemmed_spark
+MONGO_REPORT_COLLECTION=comments_preprocessing_report
 
-MONGO_URI=...
-MONGO_DB=analisis_sentimen
-MONGO_COMMENTS_COLLECTION=comments
-MONGO_PROCESSED_COLLECTION=comments_processed
-
+SPARK_APP_NAME=IndonesianCommentStemmingPreprocessing
 SPARK_MASTER=local[*]
-SPARK_NUM_PARTITIONS=4
-SPARK_TEXT_COLUMN=text_original
-SPARK_HOME=C:\spark
+MONGO_SPARK_CONNECTOR_PACKAGE=org.mongodb.spark:mongo-spark-connector_2.13:11.0.1
+
+OVERWRITE_EXISTING=false
+PREPROCESSING_VERSION=spark_stemmed_v1
 ```
 
-Catatan:
-- `SPARK_MASTER` adalah alamat master Spark, misalnya `spark://192.168.0.10:7077`
-- `SPARK_HOME` harus berisi path folder instalasi Spark, bukan URL
-- `MONGO_PROCESSED_COLLECTION` adalah collection tujuan hasil preprocessing
-- Kalau nama kolom teks di MongoDB bukan `text_original`, ubah `SPARK_TEXT_COLUMN`
+MongoDB harus dapat diakses. Pipeline berhenti dengan error jika koneksi gagal,
+collection input kosong, atau `text_original` tidak tersedia.
 
-## Alur Data
-
-1. Ambil komentar YouTube
-2. Simpan komentar mentah ke MongoDB
-3. Baca komentar dari MongoDB
-4. Lakukan preprocessing teks
-5. Simpan hasil preprocessing ke MongoDB
-6. Pakai data hasil preprocessing untuk training model
-
-## MongoDB
-
-File utama untuk membaca data komentar:
-- `src/mongo_comments_loader.py`
-
-File utama untuk preprocessing dan menyimpan hasil ke MongoDB:
-- `src/preprocess_spark.py`
-
-Jalankan loader untuk cek data mentah:
-
-```powershell
-python src\mongo_comments_loader.py
-```
-
-Jalankan preprocessing:
+## Menjalankan dengan Python
 
 ```powershell
 python src\preprocess_spark.py
 ```
 
-Jalankan labeling sentiment Spark + IndoBERT dari collection hasil preprocessing:
+Script mengatur MongoDB Spark Connector melalui `spark.jars.packages`.
+
+## Menjalankan Notebook
 
 ```powershell
-python label_sentiment_spark.py
+jupyter notebook analisis_sentimen_spark_mongodb.ipynb
 ```
 
-Labeling membaca `text_preprocessed` tanpa preprocessing tambahan dan langsung
-menulis hasil ke `MONGO_LABELED_COLLECTION`. Penulisan menggunakan upsert
-berdasarkan `comment_id`, sehingga retry Spark tidak membuat duplikat. Kalau
-proses dijalankan ulang, script hanya melabel komentar yang belum ada di
-collection output. Konfigurasi utamanya:
+Pilih kernel `.venv`, lalu jalankan seluruh sel dari atas. Notebook berisi
+implementasi lengkap dan tidak mengimpor script dari folder `src`.
 
-```env
-MONGO_LABELED_COLLECTION=comments_labeled
-SENTIMENT_MODEL=w11wo/indonesian-roberta-base-sentiment-classifier
-SENTIMENT_BATCH_SIZE=16
-SENTIMENT_DEVICE=-1
-SENTIMENT_MAX_LENGTH=512
-```
-
-Gunakan `SENTIMENT_DEVICE=-1` untuk CPU atau `0` untuk GPU pertama.
-
-Saat dijalankan, script akan meminta input resource Spark:
-
-```text
-Target Spark master: spark://192.168.0.10:7077
-Total core aplikasi [4]:
-Memory per executor/driver [2g]:
-```
-
-Tekan Enter untuk memakai default. Nilai default bisa diatur lewat `.env`:
-
-```env
-SPARK_CORES=4
-SPARK_MEMORY=2g
-```
-
-Kalau `SPARK_MASTER` berisi `spark://...`, preprocessing tetap dikirim ke Spark cluster tersebut. `SPARK_CORES` menjadi batas total core aplikasi, sedangkan core per executor dibiarkan memakai default Spark.
-
-Preprocessing Spark memakai helper yang sama seperti workflow lokal, lalu dibungkus proses distribusi Spark agar cocok untuk data dari MongoDB.
-Hasil yang disimpan ke collection processed hanya berisi metadata penting dan `text_preprocessed`, jadi output lebih bersih dan tidak menduplikasi teks mentah.
-
-## Preprocessing Raw JSON Notebook
-
-Kalau memakai file raw dari notebook:
-
-```text
-notebooks\data\raw\comments_raw_all_videos.json
-```
-
-jalankan:
+## Menjalankan dengan spark-submit
 
 ```powershell
-python src\preprocess_raw_youtube.py
+spark-submit `
+  --packages org.mongodb.spark:mongo-spark-connector_2.13:11.0.1 `
+  src\preprocess_spark.py
 ```
 
-Output akan dibuat ke:
-
-```text
-notebooks\data\processed\comments_preprocessed_all_videos.csv
-notebooks\data\processed\comments_preprocessed_all_videos.jsonl
-```
-
-Preprocessing ini memakai core helper yang sama, lalu menambah fitur khusus raw JSON:
-- flatten struktur `raw_comment_threads`
-- ambil metadata penting komentar dan video
-- buang komentar kosong dan duplikat `comment_id`
-- normalisasi URL, mention, hashtag, emoji, huruf berulang, dan slang seperti `yg`, `gak`, `tdk`, `dgn`
-- tetap mempertahankan negasi seperti `tidak`, `bukan`, `jangan`, dan `belum`
-- tambah fitur ringan seperti jumlah emoji, tanda tanya, tanda seru, URL, dan rasio huruf kapital
-
-Kalau ingin menambahkan stemming Sastrawi, jalankan:
-
-```powershell
-python src\preprocess_raw_youtube.py --with-stem
-```
-
-Catatan: `--with-stem` jauh lebih lambat. Untuk TF-IDF + Logistic Regression, output default `text_preprocessed` biasanya lebih praktis karena sudah bersih dan tetap mempertahankan kata negasi.
-
-## Spark
-
-### Mode lokal
-
-Kalau semua dijalankan di satu mesin, cukup pakai:
-
-```env
-SPARK_MASTER=local[*]
-```
-
-### Mode cluster
-
-Kalau device ini hanya sebagai worker dan master ada di laptop lain, set:
+Untuk Spark standalone, ubah `SPARK_MASTER` di `.env`, misalnya:
 
 ```env
 SPARK_MASTER=spark://192.168.0.10:7077
-SPARK_HOME=C:\spark
 ```
 
-Lalu jalankan worker di PowerShell:
+## Aturan Penulisan Output
 
-```powershell
-$env:SPARK_HOME="C:\spark"
-$env:SPARK_MASTER="spark://192.168.0.10:7077"
-& "$env:SPARK_HOME\bin\spark-class.cmd" org.apache.spark.deploy.worker.Worker "$env:SPARK_MASTER"
-```
+- `OVERWRITE_EXISTING=true`: menulis dengan mode overwrite ke
+  `MONGO_OUTPUT_COLLECTION`.
+- `OVERWRITE_EXISTING=false`: tidak menyentuh collection output lama dan membuat
+  collection baru dengan suffix timestamp, misalnya
+  `comments_stemmed_spark_20260614_210000`.
+- Collection input tidak pernah ditimpa.
+- Report selalu di-append ke `MONGO_REPORT_COLLECTION`.
 
-Kalau ingin membatasi resource worker:
+## Contoh Hasil
 
-```powershell
-$env:SPARK_HOME="C:\spark"
-$env:SPARK_MASTER="spark://192.168.0.10:7077"
-& "$env:SPARK_HOME\bin\spark-class.cmd" org.apache.spark.deploy.worker.Worker --cores 4 --memory 4g "$env:SPARK_MASTER"
-```
-
-Catatan penting:
-- Paket Spark yang ada di `C:\spark` pada instalasi ini tidak memakai `sbin\start-worker.cmd`
-- Untuk instalasi ini, `spark-class.cmd` adalah command yang dipakai di Windows
-- Pastikan port `7077` bisa diakses dari worker ke master
-
-## Cara Mendapatkan Video ID YouTube
-
-Contoh URL:
+Script menampilkan 10 baris contoh dari MongoDB setelah proses:
 
 ```text
-https://www.youtube.com/watch?v=dQw4w9WgXcQ
++------------------------------+--------------------------+--------+
+|text_original                 |text_stemmed              |label   |
++------------------------------+--------------------------+--------+
+|Gak setuju RUU TNI ini!       |tidak setuju ruu tni     |negative|
+|Mantap pak, lanjutkan 👍       |mantap bapak lanjut emo_pos|positive|
++------------------------------+--------------------------+--------+
 ```
 
-Video ID-nya:
+Contoh tersebut hanya ilustrasi. Nilai aktual berasal dari collection MongoDB.
 
-```text
-dQw4w9WgXcQ
+## Contoh Report
+
+Report disimpan sebagai satu dokumen per run:
+
+```json
+{
+  "run_id": "uuid",
+  "input_collection": "comments_labeled",
+  "output_collection": "comments_stemmed_spark_20260614_210000",
+  "preprocessing_version": "spark_stemmed_v1",
+  "total_rows_input": 15516,
+  "total_rows_output": 15516,
+  "total_unique_videos": 5,
+  "total_unique_authors": 12000,
+  "missing_text_count": 0,
+  "duplicate_comment_id_count": 0,
+  "duplicate_text_original_count": 120,
+  "duplicate_text_count": 120,
+  "comments_with_emoji_count": 2930,
+  "comments_with_url_count": 10,
+  "total_profanity": 340,
+  "total_domain_terms": 22100,
+  "empty_text_stemmed_count": 3,
+  "warnings": ["3 text_stemmed kosong."]
+}
 ```
 
-Kalau URL pendek:
+Distribusi label, metrik validasi, serta top token sebelum dan sesudah stemming
+disimpan pada field JSON di dokumen report.
 
-```text
-https://youtu.be/dQw4w9WgXcQ
-```
+## Catatan Connector
 
-Video ID tetap bagian terakhir URL:
+Pipeline menggunakan format `mongodb` dari MongoDB Spark Connector 11.0.1.
+Versi ini ditujukan untuk Spark 4.x dan Scala 2.13. Connector harus tersedia
+pada driver dan seluruh executor.
 
-```text
-dQw4w9WgXcQ
-```
-
-## Notebook
-
-Kalau ingin menjalankan workflow seperti di Google Colab:
-
-1. Install extension VS Code: **Python** dan **Jupyter**
-2. Buka notebook di folder `notebooks/`
-3. Pilih kernel Python dari `.venv`
-4. Jalankan cell satu per satu dengan `Shift+Enter`
-
-## Model Training
-
-Setelah preprocessing selesai, data bisa dipakai untuk training model di pipeline training yang ada di repo ini.
-
-## Troubleshooting Cepat
-
-- Kalau preprocessing tidak masuk MongoDB, cek `MONGO_URI`, `MONGO_DB`, dan `MONGO_PROCESSED_COLLECTION`
-- Kalau Spark worker tidak muncul di master, cek koneksi ke `spark://<IP_MASTER>:7077`
-- Kalau script tidak menemukan teks komentar, cek `SPARK_TEXT_COLUMN`
-- Kalau `SPARK_HOME` berisi URL `spark://...`, ubah menjadi path folder seperti `C:\spark`
-
+Pada Windows, Spark yang memakai `--packages` dapat membutuhkan `HADOOP_HOME`
+dan `winutils.exe`. Jika muncul error `HADOOP_HOME and hadoop.home.dir are
+unset`, lengkapi instalasi Hadoop Windows terlebih dahulu atau jalankan melalui
+Spark cluster/Linux yang sudah dikonfigurasi.
