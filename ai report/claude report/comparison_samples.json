@@ -1,0 +1,223 @@
+[
+  {
+    "index": 0,
+    "text_original": "Ini 98 bkal kejadian lg gk yah.. Aduh ngebayangin ke masa itu ja dh  ngeri bgt, tr yg gantiin presid",
+    "text_final_original": "1998 bakal kejadian tidak aduh membayangkan masa takut banget gantiin presiden fufufafa innalillahi ",
+    "text_final_improved": "ini 98 bkal kejadian lg tidak yah aduh membayangkan ke masa itu ja dh ngeri bgt tr yang gantiin pres",
+    "metadata": {
+      "original_length": 32,
+      "final_length": 32,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Ini 98 bkal kejadian lg gk yah.. Aduh ngebayangin ke masa itu ja dh  ngeri bgt, tr yg gantiin presiden fufufafa lg.. Innalillahi wa inna lillahi rojiun lindungi bangsa ini ya allah",
+    "full_final_original": "1998 bakal kejadian tidak aduh membayangkan masa takut banget gantiin presiden fufufafa innalillahi wa inna lillahi rojiun lindungi bangsa allah",
+    "full_improved": "ini 98 bkal kejadian lg tidak yah aduh membayangkan ke masa itu ja dh ngeri bgt tr yang gantiin presiden fufufafa lg innalillahi wa inna lillahi rojiun lindungi bangsa ini ya allah"
+  },
+  {
+    "index": 1,
+    "text_original": "1998 BakaL terulang sepertinya klo pemerintah Se enak nya gini...😅",
+    "text_final_original": "1998 bakal terulang sepertinya kalau pemerintah se enak begini emo_other",
+    "text_final_improved": "1998 bakal terulang sepertinya kalau pemerintah se enak nya gini [emoji]",
+    "metadata": {
+      "original_length": 10,
+      "final_length": 11,
+      "compression_ratio": -10.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "1998 BakaL terulang sepertinya klo pemerintah Se enak nya gini...😅",
+    "full_final_original": "1998 bakal terulang sepertinya kalau pemerintah se enak begini emo_other",
+    "full_improved": "1998 bakal terulang sepertinya kalau pemerintah se enak nya gini [emoji]"
+  },
+  {
+    "index": 52,
+    "text_original": "alasan-alasan kocak dari wakil rakyat... dikira kita semua level cerdasnya setara wapres kali ya?",
+    "text_final_original": "alasan alasan kocak wakil rakyat dikira semua level cerdasnya setara wapres kali yai",
+    "text_final_improved": "alasan-alasan kocak dari wakil rakyat dikira kita semua level cerdasnya setara wapres kali ya",
+    "metadata": {
+      "original_length": 14,
+      "final_length": 14,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "alasan-alasan kocak dari wakil rakyat... dikira kita semua level cerdasnya setara wapres kali ya?",
+    "full_final_original": "alasan alasan kocak wakil rakyat dikira semua level cerdasnya setara wapres kali yai",
+    "full_improved": "alasan-alasan kocak dari wakil rakyat dikira kita semua level cerdasnya setara wapres kali ya"
+  },
+  {
+    "index": 79,
+    "text_original": "Aneh...\nYg didemo Rakyat seluruh Indonesia UU penyitaan kendaraan...\nisinya tolaakk bayar pajak...\nY",
+    "text_final_original": "aneh didemo rakyat seluruh indonesia uu penyitaan kendaraan isinya tolaakk bayar pajak diviralkan di",
+    "text_final_improved": "aneh yang didemo rakyat seluruh indonesia uu penyitaan kendaraan isinya tolaakk bayar pajak yang div",
+    "metadata": {
+      "original_length": 86,
+      "final_length": 87,
+      "compression_ratio": -1.1627906976744187,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Aneh...\nYg didemo Rakyat seluruh Indonesia UU penyitaan kendaraan...\nisinya tolaakk bayar pajak...\nYg diviralkan dan dijadikan topik utama dimedia media PUSAT demo UU TNI yg notabene tidak ada kaitannya dengan bayar pajak...( Rakyat tidak peduli UU TNI...namun Rakyat berani mati jika motor butut Disita negara)\nElite politik memanfaatkan dan menunggangi situasi memakai jasa mahasewa dan ormas buzzer karena takut TNI masuk ke dalam sistem demokrezy...\nJika mahasewa peduli bangsa \nMengapa tidak demo mendukung UU perampasan aset koruptor...\n*TNI PEDULI BANGSA*\nmasuk dan hancurkan jaringan koruptor...",
+    "full_final_original": "aneh didemo rakyat seluruh indonesia uu penyitaan kendaraan isinya tolaakk bayar pajak diviralkan dijadikan topik utama dimedia media pusat demo uu tni notabene tidak kaitannya bayar pajak rakyat tidak peduli uu tni rakyat berani mati motor butut disita negara elite politik memanfaatkan menunggangi situasi memakai jasa mahasewa ormas buzzer takut tni masuk sistem demokrezy mahasewa peduli bangsa tidak demo mendukung uu perampasan aset koruptor tni peduli bangsa masuk hancurkan jaringan koruptor",
+    "full_improved": "aneh yang didemo rakyat seluruh indonesia uu penyitaan kendaraan isinya tolaakk bayar pajak yang diviralkan dan dijadikan topik utama dimedia media pusat demo uu tni yang notabene tidak ada kaitannya dengan bayar pajak rakyat tidak peduli uu tni namun rakyat berani mati jika motor butut disita negara elite politik memanfaatkan dan menunggangi situasi memakai jasa mahasewa dan ormas buzzer karena takut tni masuk ke dalam sistem demokrezy jika mahasewa peduli bangsa mengapa tidak demo mendukung uu perampasan aset koruptor tni peduli bangsa masuk dan hancurkan jaringan koruptor"
+  },
+  {
+    "index": 106,
+    "text_original": "Apa mau jajal kepemerintahan menurut Islam Bang? 🙏😂",
+    "text_final_original": "apa mau jajal kepemerintahan islam bangi emo_pos emo_laugh",
+    "text_final_improved": "apa mau jajal kepemerintahan menurut islam bang [hope_pos] [laugh_pos]",
+    "metadata": {
+      "original_length": 8,
+      "final_length": 9,
+      "compression_ratio": -12.5,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Apa mau jajal kepemerintahan menurut Islam Bang? 🙏😂",
+    "full_final_original": "apa mau jajal kepemerintahan islam bangi emo_pos emo_laugh",
+    "full_improved": "apa mau jajal kepemerintahan menurut islam bang [hope_pos] [laugh_pos]"
+  },
+  {
+    "index": 116,
+    "text_original": "​@EmaStefanyjabatan apaan setan doang yang dijadikan dslib awokwowk",
+    "text_final_original": "apa setan dijadikan dslib awokwowk",
+    "text_final_improved": "emastefanyjabatan apaan setan doang yang dijadikan dslib awokwowk",
+    "metadata": {
+      "original_length": 8,
+      "final_length": 8,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "​@EmaStefanyjabatan apaan setan doang yang dijadikan dslib awokwowk",
+    "full_final_original": "apa setan dijadikan dslib awokwowk",
+    "full_improved": "emastefanyjabatan apaan setan doang yang dijadikan dslib awokwowk"
+  },
+  {
+    "index": 151,
+    "text_original": "Awas bang lu ilang nanti😂😂",
+    "text_final_original": "awas kamu ilang emo_laugh",
+    "text_final_improved": "awas bang lu ilang nanti [laugh_pos]",
+    "metadata": {
+      "original_length": 5,
+      "final_length": 6,
+      "compression_ratio": -20.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Awas bang lu ilang nanti😂😂",
+    "full_final_original": "awas kamu ilang emo_laugh",
+    "full_improved": "awas bang lu ilang nanti [laugh_pos]"
+  },
+  {
+    "index": 187,
+    "text_original": "bagus lah biar orang partai tidak pada saling sangkal",
+    "text_final_original": "bagus biar orang partai tidak saling sangkal",
+    "text_final_improved": "bagus lah biar orang partai tidak pada saling sangkal",
+    "metadata": {
+      "original_length": 9,
+      "final_length": 9,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "bagus lah biar orang partai tidak pada saling sangkal",
+    "full_final_original": "bagus biar orang partai tidak saling sangkal",
+    "full_improved": "bagus lah biar orang partai tidak pada saling sangkal"
+  },
+  {
+    "index": 350,
+    "text_original": "benerean tuh nggak bercanda kok lucu ya 🤣",
+    "text_final_original": "benerean tidak bercanda kok lucu emo_laugh",
+    "text_final_improved": "benerean tuh tidak bercanda mengapa lucu ya [laugh_pos]",
+    "metadata": {
+      "original_length": 8,
+      "final_length": 8,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "benerean tuh nggak bercanda kok lucu ya 🤣",
+    "full_final_original": "benerean tidak bercanda kok lucu emo_laugh",
+    "full_improved": "benerean tuh tidak bercanda mengapa lucu ya [laugh_pos]"
+  },
+  {
+    "index": 400,
+    "text_original": "Biar bisa korupsi mode incognito, biar yang komentar/banyak omong bisa dihilangin",
+    "text_final_original": "biar korupsi mode incognito biar komentar banyak omong dihilangin",
+    "text_final_improved": "biar bisa korupsi mode incognito biar yang komentar banyak omong bisa dihilangin",
+    "metadata": {
+      "original_length": 11,
+      "final_length": 12,
+      "compression_ratio": -9.090909090909092,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Biar bisa korupsi mode incognito, biar yang komentar/banyak omong bisa dihilangin",
+    "full_final_original": "biar korupsi mode incognito biar komentar banyak omong dihilangin",
+    "full_improved": "biar bisa korupsi mode incognito biar yang komentar banyak omong bisa dihilangin"
+  },
+  {
+    "index": 1000,
+    "text_original": "Informasinya kurang...gak bisa komen apa...apa iya seperti yg disampaikan itu?",
+    "text_final_original": "informasinya kurang tidak komen apa apa iya disampaikan",
+    "text_final_improved": "informasinya kurang tidak bisa komen apa apa iya seperti yang disampaikan itu",
+    "metadata": {
+      "original_length": 10,
+      "final_length": 12,
+      "compression_ratio": -20.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Informasinya kurang...gak bisa komen apa...apa iya seperti yg disampaikan itu?",
+    "full_final_original": "informasinya kurang tidak komen apa apa iya disampaikan",
+    "full_improved": "informasinya kurang tidak bisa komen apa apa iya seperti yang disampaikan itu"
+  },
+  {
+    "index": 2000,
+    "text_original": "Nonton ketika ruu tni telah disahkan 🥲",
+    "text_final_original": "nonton ruu tni disahkan emo_sad",
+    "text_final_improved": "nonton ketika ruu tni telah disahkan [emoji]",
+    "metadata": {
+      "original_length": 7,
+      "final_length": 7,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Nonton ketika ruu tni telah disahkan 🥲",
+    "full_final_original": "nonton ruu tni disahkan emo_sad",
+    "full_improved": "nonton ketika ruu tni telah disahkan [emoji]"
+  },
+  {
+    "index": 3000,
+    "text_original": "Bilang aja ..\nLahan basahnya takut ketauan .😂😂😂",
+    "text_final_original": "bilang lahan basahnya takut ketauan emo_laugh",
+    "text_final_improved": "bilang aja lahan basahnya takut ketauan [laugh_pos] [laugh_pos]",
+    "metadata": {
+      "original_length": 8,
+      "final_length": 8,
+      "compression_ratio": 0.0,
+      "quality": "good",
+      "quality_reason": "good",
+      "english_ratio": 0.0
+    },
+    "full_original": "Bilang aja ..\nLahan basahnya takut ketauan .😂😂😂",
+    "full_final_original": "bilang lahan basahnya takut ketauan emo_laugh",
+    "full_improved": "bilang aja lahan basahnya takut ketauan [laugh_pos] [laugh_pos]"
+  }
+]
