@@ -21,20 +21,16 @@ sebagai sumber dan tidak disimpan ke collection output.
 - Ekspansi hashtag seperti `#TolakRUUTNI` menjadi `tolak ruu tni`
 - Normalisasi slang berbasis token menggunakan Spark broadcast variable
 - Stopword removal yang mempertahankan negasi, intensifier, domain term, dan kata sentimen
-- Stemming Sastrawi opsional melalui `PREPROCESSING_USE_STEMMING`; default dimatikan
-  agar preprocessing lokal Windows tetap stabil
+- Stemming Sastrawi opsional melalui `PREPROCESSING_USE_STEMMING`; default nonaktif
+  agar run Spark lokal tetap cepat dan stabil
 - Penandaan duplikasi berdasarkan `text_final`
 - Penyimpanan hasil dan report ke MongoDB
 
 ## Output
 
-Collection output dipotong ke field yang diperlukan saja, seperti
-`comment_id`, `thread_id`, `video_id`, `author`, `label`, dan `text_original`
-jika field tersebut tersedia di input. Pipeline menambahkan:
-
-- `text_final` sebagai satu-satunya output teks final
-- `preprocessing_version`
-- `processed_at`
+Collection output `comments_preprocessed` dipotong ke field penting untuk
+training saja: `comment_id`, `video_id`, `label` jika tersedia, `text_original`,
+dan `text_final`.
 
 ## Setup
 
@@ -51,15 +47,15 @@ Isi `.env`:
 MONGO_URI=mongodb://localhost:27017
 MONGO_DATABASE=analisis_sentimen
 MONGO_INPUT_COLLECTION=comments_labeled
-MONGO_OUTPUT_COLLECTION=comments_preprocessed_spark
+MONGO_OUTPUT_COLLECTION=comments_preprocessed
 MONGO_REPORT_COLLECTION=comments_preprocessing_report
 
 SPARK_APP_NAME=IndonesianCommentStemmingPreprocessing
 SPARK_MASTER=local[*]
 MONGO_SPARK_CONNECTOR_PACKAGE=org.mongodb.spark:mongo-spark-connector_2.13:11.0.1
 
-OVERWRITE_EXISTING=false
-PREPROCESSING_VERSION=spark_text_final_v1
+OVERWRITE_EXISTING=true
+PREPROCESSING_VERSION=spark_text_final_v2
 PREPROCESSING_MAX_CHARS=1000
 PREPROCESSING_MAX_TOKENS=120
 PREPROCESSING_USE_STEMMING=false
@@ -101,13 +97,10 @@ SPARK_MASTER=spark://192.168.0.10:7077
 
 ## Aturan Penulisan Output
 
-- `OVERWRITE_EXISTING=true`: menulis dengan mode overwrite ke
-  `MONGO_OUTPUT_COLLECTION`.
-- `OVERWRITE_EXISTING=false`: tidak menyentuh collection output lama dan membuat
-  collection baru dengan suffix timestamp, misalnya
-  `comments_preprocessed_spark_20260614_210000`.
+- Output data training selalu ditulis ke `comments_preprocessed` dengan mode
+  overwrite agar tidak membuat collection baru bersuffix timestamp.
 - Collection input tidak pernah ditimpa.
-- Report selalu di-append ke `MONGO_REPORT_COLLECTION`.
+- Report selalu di-append ke `comments_preprocessing_report`.
 
 ## Contoh Hasil
 
@@ -132,8 +125,8 @@ Report disimpan sebagai satu dokumen per run:
 {
   "run_id": "uuid",
   "input_collection": "comments_labeled",
-  "output_collection": "comments_preprocessed_spark_20260614_210000",
-  "preprocessing_version": "spark_text_final_v1",
+  "output_collection": "comments_preprocessed",
+  "preprocessing_version": "spark_text_final_v2",
   "total_rows_input": 15516,
   "total_rows_output": 15516,
   "total_unique_videos": 5,
