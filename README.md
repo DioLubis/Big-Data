@@ -17,7 +17,7 @@ sebagai sumber dan tidak disimpan ke collection output.
 - HTML unescape, perbaikan encoding `ftfy`, Unicode NFKC, zero-width removal
 - Ekstraksi fitur sebelum cleaning
 - Emoji menjadi token sentimen
-- URL menjadi `url_token`, mention menjadi `user_mention`
+- URL dan mention dibersihkan dari teks final
 - Ekspansi hashtag seperti `#TolakRUUTNI` menjadi `tolak ruu tni`
 - Normalisasi slang berbasis token menggunakan Spark broadcast variable
 - Stopword removal yang mempertahankan negasi, intensifier, domain term, dan kata sentimen
