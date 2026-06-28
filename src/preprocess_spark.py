@@ -33,16 +33,34 @@ from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFacto
 
 
 MONGO_CONNECTOR_PACKAGE = "org.mongodb.spark:mongo-spark-connector_2.13:11.0.1"
+FINAL_TEXT_COLUMN = "text_final"
+MAX_PREPROCESS_CHARS = 1000
+MAX_PREPROCESS_TOKENS = 120
 DERIVED_TEXT_COLUMNS = {
     "text_clean",
     "text_preprocessed",
     "text_stemmed",
+    "text_final",
     "text_final_classic",
     "text_final_transformer",
     "text_final_classic_stemmed",
     "text_stopword_removed",
     "text_slang_normalized",
 }
+OUTPUT_INPUT_COLUMNS = [
+    "comment_id",
+    "thread_id",
+    "parent_comment_id",
+    "video_id",
+    "author",
+    "author_channel_id",
+    "published_at",
+    "like_count",
+    "label",
+    "score",
+    "sentiment_score",
+    "text_original",
+]
 GENERATED_COLUMNS = DERIVED_TEXT_COLUMNS | {
     "tokens",
     "normalized_token_count",
@@ -260,7 +278,7 @@ _STEMMER = None
 
 PREPROCESS_SCHEMA = StructType(
     [
-        StructField("text_stemmed", StringType(), False),
+        StructField(FINAL_TEXT_COLUMN, StringType(), False),
         StructField("tokens", ArrayType(StringType(), False), False),
         StructField("normalized_token_count", IntegerType(), False),
         StructField("raw_char_count", IntegerType(), False),
@@ -307,7 +325,7 @@ REPORT_SCHEMA = StructType(
         StructField("top_tokens_after_json", StringType(), False),
         StructField("total_profanity", LongType(), False),
         StructField("total_domain_terms", LongType(), False),
-        StructField("empty_text_stemmed_count", LongType(), False),
+        StructField("empty_text_final_count", LongType(), False),
         StructField("warnings", ArrayType(StringType(), False), False),
     ]
 )
@@ -322,6 +340,17 @@ def required_env(name: str) -> str:
 
 def env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"Konfigurasi {name} harus berupa integer.") from exc
+    return parsed if parsed > 0 else default
 
 
 def basic_clean_text(text: Any) -> str:
@@ -387,8 +416,12 @@ def stem_token(token: str) -> str:
 
 
 def build_preprocessor(slang_broadcast):
-    def preprocess_text(text: Any):
-        raw = basic_clean_text(text)
+    max_chars = env_int("PREPROCESSING_MAX_CHARS", MAX_PREPROCESS_CHARS)
+    max_tokens = env_int("PREPROCESSING_MAX_TOKENS", MAX_PREPROCESS_TOKENS)
+    use_stemming = env_bool("PREPROCESSING_USE_STEMMING", False)
+
+    def preprocess_text_base(text: Any, stemmer_func=None):
+        raw = basic_clean_text(text)[:max_chars]
         raw_tokens = [token.casefold() for token in RAW_TOKEN_RE.findall(raw)]
         letters = [character for character in raw if character.isalpha()]
         uppercase_count = sum(character.isupper() for character in letters)
@@ -416,15 +449,19 @@ def build_preprocessor(slang_broadcast):
             if token in SPECIAL_TOKENS
             or token in PRESERVED_STOPWORDS
             or (len(token) > 1 and token not in STOPWORDS)
-        ]
-        stemmed_tokens = [stem_token(token) for token in filtered_tokens]
-        stemmed_tokens = [token for token in stemmed_tokens if token]
+        ][:max_tokens]
+        final_tokens = (
+            [stemmer_func(token) for token in filtered_tokens]
+            if stemmer_func is not None
+            else filtered_tokens
+        )
+        final_tokens = [token for token in final_tokens if token]
 
         domain_count = count_terms(feature_tokens, DOMAIN_TERMS)
         profanity_count = count_terms(feature_tokens, PROFANITY_TERMS)
         return (
-            " ".join(stemmed_tokens),
-            stemmed_tokens,
+            " ".join(final_tokens),
+            final_tokens,
             len(filtered_tokens),
             len(raw),
             len(raw_tokens),
@@ -442,6 +479,15 @@ def build_preprocessor(slang_broadcast):
             domain_count,
             profanity_count,
         )
+
+    if use_stemming:
+        def preprocess_text(text: Any):
+            return preprocess_text_base(text, stem_token)
+
+        return preprocess_text
+
+    def preprocess_text(text: Any):
+        return preprocess_text_base(text)
 
     return preprocess_text
 
@@ -461,6 +507,9 @@ def create_spark_session() -> SparkSession:
         .config("spark.mongodb.read.connection.uri", mongo_uri)
         .config("spark.mongodb.write.connection.uri", mongo_uri)
         .config("spark.sql.execution.pythonUDF.arrow.enabled", "false")
+        .config("spark.sql.shuffle.partitions", os.getenv("SPARK_SQL_SHUFFLE_PARTITIONS", "4"))
+        .config("spark.default.parallelism", os.getenv("SPARK_DEFAULT_PARALLELISM", "4"))
+        .config("spark.driver.memory", os.getenv("SPARK_MEMORY", "1g"))
     )
     if master.startswith("local"):
         os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
@@ -573,19 +622,32 @@ def add_raw_tokens(df: DataFrame) -> DataFrame:
 
 def preprocess_dataframe(input_df: DataFrame, slang_broadcast) -> DataFrame:
     preprocess_udf = F.udf(build_preprocessor(slang_broadcast), PREPROCESS_SCHEMA)
-    columns_to_drop = [name for name in GENERATED_COLUMNS if name in input_df.columns]
-    base_df = input_df.drop(*columns_to_drop)
+    base_columns = [
+        name
+        for name in OUTPUT_INPUT_COLUMNS
+        if name in input_df.columns and name not in GENERATED_COLUMNS
+    ]
+    base_df = input_df.select(*base_columns)
     processed = base_df.withColumn("_preprocessing", preprocess_udf(F.col("text_original")))
     processed = processed.select("*", "_preprocessing.*").drop("_preprocessing")
-    duplicate_window = Window.partitionBy("text_stemmed")
+    duplicate_window = Window.partitionBy(FINAL_TEXT_COLUMN)
     return (
         processed.withColumn(
             "is_duplicate_text",
-            (F.count(F.lit(1)).over(duplicate_window) > 1) & (F.col("text_stemmed") != ""),
+            (F.count(F.lit(1)).over(duplicate_window) > 1) & (F.col(FINAL_TEXT_COLUMN) != ""),
         )
         .withColumn("preprocessing_version", F.lit(required_env("PREPROCESSING_VERSION")))
         .withColumn("processed_at", F.current_timestamp())
     )
+
+
+def select_output_dataframe(processed_df: DataFrame) -> DataFrame:
+    output_columns = [
+        name
+        for name in [*OUTPUT_INPUT_COLUMNS, FINAL_TEXT_COLUMN, "preprocessing_version", "processed_at"]
+        if name in processed_df.columns
+    ]
+    return processed_df.select(*output_columns)
 
 
 def choose_output_collection(spark: SparkSession, database: str, requested: str) -> tuple[str, str]:
@@ -606,12 +668,12 @@ def build_final_report(
         F.count("*").alias("total_rows_output"),
         F.sum(F.col("profanity_count")).alias("total_profanity"),
         F.sum(F.col("domain_term_count")).alias("total_domain_terms"),
-        F.sum(F.when(F.col("text_stemmed") == "", 1).otherwise(0)).alias("empty_text_stemmed"),
+        F.sum(F.when(F.col(FINAL_TEXT_COLUMN) == "", 1).otherwise(0)).alias("empty_text_final"),
         F.sum(F.when(F.col("is_duplicate_text"), 1).otherwise(0)).alias("duplicate_text_count"),
         F.sum(
             F.when(
                 F.col("contains_negation")
-                & ~F.col("text_stemmed").rlike(
+                & ~F.col(FINAL_TEXT_COLUMN).rlike(
                     r"(^|\s)(tidak|bukan|jangan|belum|tanpa|kurang|tak)(\s|$)"
                 ),
                 1,
@@ -620,7 +682,7 @@ def build_final_report(
         F.sum(
             F.when(
                 F.col("contains_domain_terms")
-                & ~F.col("text_stemmed").rlike(
+                & ~F.col(FINAL_TEXT_COLUMN).rlike(
                     r"(^|\s)(tni|dpr|ruu|uu|sipil|militer|rakyat|negara|korupsi|koruptor|aset|"
                     r"perampasan|pemerintah|presiden|prabowo|polisi|demo|mahasiswa|orde|orba|"
                     r"oligarki|demokrasi|pasal)(\s|$)"
@@ -630,8 +692,8 @@ def build_final_report(
         ).alias("lost_domain_term_count"),
     ).first()
     warnings: list[str] = []
-    if totals["empty_text_stemmed"]:
-        warnings.append(f"{totals['empty_text_stemmed']} text_stemmed kosong.")
+    if totals["empty_text_final"]:
+        warnings.append(f"{totals['empty_text_final']} {FINAL_TEXT_COLUMN} kosong.")
     if totals["lost_negation_count"]:
         warnings.append(f"{totals['lost_negation_count']} komentar terindikasi kehilangan negasi.")
     if totals["lost_domain_term_count"]:
@@ -666,13 +728,13 @@ def build_final_report(
         "top_tokens_after_json": json.dumps(top_tokens(processed_df, "tokens"), ensure_ascii=False),
         "total_profanity": int(totals["total_profanity"] or 0),
         "total_domain_terms": int(totals["total_domain_terms"] or 0),
-        "empty_text_stemmed_count": int(totals["empty_text_stemmed"] or 0),
+        "empty_text_final_count": int(totals["empty_text_final"] or 0),
         "warnings": warnings,
     }
 
 
 def main() -> None:
-    load_dotenv(override=False)
+    load_dotenv(override=True)
     database = required_env("MONGO_DATABASE")
     input_collection = required_env("MONGO_INPUT_COLLECTION")
     requested_output_collection = required_env("MONGO_OUTPUT_COLLECTION")
@@ -690,7 +752,7 @@ def main() -> None:
         flush=True,
     )
     try:
-        input_df = mongo_read(spark, database, input_collection).persist(StorageLevel.MEMORY_AND_DISK)
+        input_df = mongo_read(spark, database, input_collection)
         total_rows = input_df.count()
         if total_rows == 0:
             raise ValueError(f"Collection input kosong: {database}.{input_collection}")
@@ -702,13 +764,12 @@ def main() -> None:
         raw_top_tokens = top_tokens(raw_report_df, "_raw_report_tokens")
         slang_broadcast = spark.sparkContext.broadcast(SLANG_MAP)
 
-        processed_df = preprocess_dataframe(input_df, slang_broadcast).persist(
-            StorageLevel.MEMORY_AND_DISK
-        )
+        processed_df = preprocess_dataframe(input_df, slang_broadcast).persist(StorageLevel.DISK_ONLY)
         output_collection, write_mode = choose_output_collection(
             spark, database, requested_output_collection
         )
-        mongo_write(processed_df, database, output_collection, write_mode)
+        output_df = select_output_dataframe(processed_df)
+        mongo_write(output_df, database, output_collection, write_mode)
 
         report = build_final_report(
             validation, processed_df, input_collection, output_collection, raw_top_tokens
@@ -718,10 +779,10 @@ def main() -> None:
 
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str), flush=True)
         print("\nContoh 10 hasil:", flush=True)
-        preview_columns = ["text_original", "text_stemmed"]
-        if "label" in processed_df.columns:
+        preview_columns = ["text_original", FINAL_TEXT_COLUMN]
+        if "label" in output_df.columns:
             preview_columns.append("label")
-        processed_df.select(*preview_columns).show(10, truncate=100)
+        output_df.select(*preview_columns).show(10, truncate=100)
     finally:
         spark.stop()
 

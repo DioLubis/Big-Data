@@ -6,7 +6,7 @@ Keduanya membaca komentar
 **hanya dari MongoDB** menggunakan MongoDB Spark Connector, memprosesnya dengan
 PySpark, lalu menyimpan hasil dan report **hanya ke MongoDB**.
 
-Sumber teks selalu `text_original`. Output teks final hanya `text_stemmed`.
+Sumber teks selalu `text_original`. Output teks final hanya `text_final`.
 Kolom turunan lama seperti `text_clean` dan `text_preprocessed` tidak digunakan
 sebagai sumber dan tidak disimpan ke collection output.
 
@@ -21,22 +21,18 @@ sebagai sumber dan tidak disimpan ke collection output.
 - Ekspansi hashtag seperti `#TolakRUUTNI` menjadi `tolak ruu tni`
 - Normalisasi slang berbasis token menggunakan Spark broadcast variable
 - Stopword removal yang mempertahankan negasi, intensifier, domain term, dan kata sentimen
-- Stemming Sastrawi dengan lazy-loaded stemmer per executor dan whitelist
-- Penandaan duplikasi berdasarkan `text_stemmed`
+- Stemming Sastrawi opsional melalui `PREPROCESSING_USE_STEMMING`; default dimatikan
+  agar preprocessing lokal Windows tetap stabil
+- Penandaan duplikasi berdasarkan `text_final`
 - Penyimpanan hasil dan report ke MongoDB
 
 ## Output
 
-Collection output mempertahankan semua metadata input, termasuk `_id`,
-`comment_id`, `thread_id`, `video_id`, `author`, `label`, dan `text_original`.
-Pipeline menambahkan:
+Collection output dipotong ke field yang diperlukan saja, seperti
+`comment_id`, `thread_id`, `video_id`, `author`, `label`, dan `text_original`
+jika field tersebut tersedia di input. Pipeline menambahkan:
 
-- `text_stemmed` sebagai satu-satunya output teks final
-- `tokens`
-- `normalized_token_count`
-- fitur audit seperti `emoji_count`, `url_count`, `mention_count`, dan `hashtag_count`
-- `profanity_count`, `domain_term_count`, dan indikator fitur
-- `is_duplicate_text`
+- `text_final` sebagai satu-satunya output teks final
 - `preprocessing_version`
 - `processed_at`
 
@@ -55,7 +51,7 @@ Isi `.env`:
 MONGO_URI=mongodb://localhost:27017
 MONGO_DATABASE=analisis_sentimen
 MONGO_INPUT_COLLECTION=comments_labeled
-MONGO_OUTPUT_COLLECTION=comments_stemmed_spark
+MONGO_OUTPUT_COLLECTION=comments_preprocessed_spark
 MONGO_REPORT_COLLECTION=comments_preprocessing_report
 
 SPARK_APP_NAME=IndonesianCommentStemmingPreprocessing
@@ -63,7 +59,10 @@ SPARK_MASTER=local[*]
 MONGO_SPARK_CONNECTOR_PACKAGE=org.mongodb.spark:mongo-spark-connector_2.13:11.0.1
 
 OVERWRITE_EXISTING=false
-PREPROCESSING_VERSION=spark_stemmed_v1
+PREPROCESSING_VERSION=spark_text_final_v1
+PREPROCESSING_MAX_CHARS=1000
+PREPROCESSING_MAX_TOKENS=120
+PREPROCESSING_USE_STEMMING=false
 ```
 
 MongoDB harus dapat diakses. Pipeline berhenti dengan error jika koneksi gagal,
@@ -106,7 +105,7 @@ SPARK_MASTER=spark://192.168.0.10:7077
   `MONGO_OUTPUT_COLLECTION`.
 - `OVERWRITE_EXISTING=false`: tidak menyentuh collection output lama dan membuat
   collection baru dengan suffix timestamp, misalnya
-  `comments_stemmed_spark_20260614_210000`.
+  `comments_preprocessed_spark_20260614_210000`.
 - Collection input tidak pernah ditimpa.
 - Report selalu di-append ke `MONGO_REPORT_COLLECTION`.
 
@@ -116,7 +115,7 @@ Script menampilkan 10 baris contoh dari MongoDB setelah proses:
 
 ```text
 +------------------------------+--------------------------+--------+
-|text_original                 |text_stemmed              |label   |
+|text_original                 |text_final                |label   |
 +------------------------------+--------------------------+--------+
 |Gak setuju RUU TNI ini!       |tidak setuju ruu tni     |negative|
 |Mantap pak, lanjutkan 👍       |mantap bapak lanjut emo_pos|positive|
@@ -133,8 +132,8 @@ Report disimpan sebagai satu dokumen per run:
 {
   "run_id": "uuid",
   "input_collection": "comments_labeled",
-  "output_collection": "comments_stemmed_spark_20260614_210000",
-  "preprocessing_version": "spark_stemmed_v1",
+  "output_collection": "comments_preprocessed_spark_20260614_210000",
+  "preprocessing_version": "spark_text_final_v1",
   "total_rows_input": 15516,
   "total_rows_output": 15516,
   "total_unique_videos": 5,
@@ -147,12 +146,12 @@ Report disimpan sebagai satu dokumen per run:
   "comments_with_url_count": 10,
   "total_profanity": 340,
   "total_domain_terms": 22100,
-  "empty_text_stemmed_count": 3,
-  "warnings": ["3 text_stemmed kosong."]
+  "empty_text_final_count": 3,
+  "warnings": ["3 text_final kosong."]
 }
 ```
 
-Distribusi label, metrik validasi, serta top token sebelum dan sesudah stemming
+Distribusi label, metrik validasi, serta top token sebelum dan sesudah preprocessing
 disimpan pada field JSON di dokumen report.
 
 ## Catatan Connector
