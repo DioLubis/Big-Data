@@ -1,971 +1,911 @@
-"""
-Dashboard EDA — Analisis Sentimen Komentar YouTube
-====================================================
-Fokus: visualisasi DATA (bukan hasil model)
-  - Distribusi label & class imbalance
-  - Statistik & distribusi panjang teks
-  - Kata-kata yang sering muncul (frekuensi & persentase)
-  - Word cloud per sentimen
-  - N-gram analysis (unigram, bigram)
-  - Distribusi per video
-  - Korelasi fitur teks
-  - Heatmap co-occurrence kata
-  - Timeline / urutan data
-"""
+"""Dashboard EDA — Analisis Sentimen Komentar YouTube"""
 from __future__ import annotations
-
-import io
-import os
+import io, os
 from collections import Counter
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from wordcloud import WordCloud
 
-# ── Page config ─────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="EDA Sentimen YouTube",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(page_title="EDA Sentimen YouTube", layout="wide",
+                   initial_sidebar_state="expanded")
 
-st.markdown("""
-<style>
-section[data-testid="stSidebar"] { background-color: #1e2130; }
-section[data-testid="stSidebar"] * { color: #e8e8e8 !important; }
-[data-testid="metric-container"] {
-    background: #f0f4f8;
-    border-left: 4px solid #3498db;
-    border-radius: 6px;
-    padding: 10px 14px;
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>
+.stApp{background:#FFFFFF;color:#1E293B}
+section[data-testid="stSidebar"]{background:#1E3A5F;border-right:1px solid #CBD5E1}
+section[data-testid="stSidebar"] *{color:#F1F5F9!important}
+section[data-testid="stSidebar"] .stButton>button{background:#2563EB;color:#FFF!important;border:none;border-radius:6px;font-weight:600}
+[data-testid="metric-container"]{background:#F8FAFC;border:1px solid #E2E8F0;border-top:3px solid #2563EB;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+[data-testid="metric-container"] label{color:#64748B!important;font-size:.8rem}
+[data-testid="metric-container"] [data-testid="stMetricValue"]{color:#1E293B!important;font-weight:700}
+button[data-baseweb="tab"]{font-weight:600;color:#64748B!important}
+button[data-baseweb="tab"][aria-selected="true"]{color:#2563EB!important;border-bottom:2px solid #2563EB}
+h1{color:#1E293B!important;font-weight:800}h2,h3{color:#1E3A5F!important}
+hr{border-color:#E2E8F0}
+</style>""", unsafe_allow_html=True)
 
-# ── Konstanta ────────────────────────────────────────────────────────────────
+# ── Konstanta ─────────────────────────────────────────────────────────────────
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
 MONGO_URI    = os.getenv("MONGO_URI", "")
 MONGO_DB     = os.getenv("MONGO_DB", "analisis_sentimen")
-SOURCE_COL   = "comments_sentiment"
+SOURCE_COL   = "comments_sentiment"       # 2000 data manual
+FULL_COL     = "full_comments_sentiment"  # 13446 data gabungan (manual + auto)
+COMMENTS_COL = "comments"
 VALID_LABELS = ["positif", "netral", "negatif"]
-LABEL_COLORS = {"positif": "#2ECC71", "netral": "#3498DB", "negatif": "#E74C3C"}
-LABEL_WC_BG  = {"positif": "#f0fff4", "netral": "#f0f8ff", "negatif": "#fff0f0"}
+LABEL_COLORS = {"positif": "#16A34A", "netral": "#2563EB", "negatif": "#DC2626"}
 SEED         = 42
 
-# Mapping video_id -> judul (dari data proyek)
 VIDEO_TITLES = {
-    "KjXe214MfwQ": "RUU TNI itu apa? Mirip Orde Baru? (@geraldvincentt)",
-    "7CLZkPwhEG4": "Revisi UU TNI: Apa dampaknya untuk masyarakat sipil? (BBC News)",
-    "F6fgLwUeeqI": "BATALKAN REVISI UU TNI (Pandji Pragiwaksono)",
+    "KjXe214MfwQ": "RUU TNI itu apa? Mirip Orde Baru?",
+    "7CLZkPwhEG4": "Revisi UU TNI: Dampak bagi Masyarakat Sipil (BBC)",
+    "F6fgLwUeeqI": "BATALKAN REVISI UU TNI (Pandji)",
     "sg8Mzx0fZbU": "Revisi UU TNI (Sepulang Sekolah)",
-    "MxCqHoldj2Y": "RUU TNI Resmi Jadi UU! Ada yang Perlu Dikhawatirkan? (METRO TV)",
+    "MxCqHoldj2Y": "RUU TNI Resmi Jadi UU (METRO TV)",
 }
 
-# Stopword ringan — kata terlalu umum yang tidak informatif untuk analisis
-STOPWORDS_EXTRA = {
-    "yang", "dan", "di", "ini", "itu", "dengan", "tidak",
-    "saya", "kamu", "kami", "kita", "ada", "kalau", "juga",
-    "untuk", "dari", "pada", "ke", "ya", "bisa", "sudah",
-    "akan", "lebih", "jadi", "atau", "tapi", "karena", "aja",
-    "saja", "bro", "dong", "lah", "pun", "nya", "nih", "si",
+# Stopword: kata sambung / kata hubung yang tidak informatif
+STOPWORDS = {
+    "yang","dan","di","ini","itu","dengan","tidak","saya","kamu","kami","kita",
+    "ada","kalau","juga","untuk","dari","pada","ke","ya","bisa","sudah","akan",
+    "lebih","jadi","atau","tapi","karena","aja","saja","bro","dong","lah","pun",
+    "nya","nih","si","iya","juga","buat","saat","bila","jika","maka","agar",
+    "supaya","namun","tetapi","sedang","telah","pun","lagi","pula","hanya","bahwa",
+    "oleh","atas","bagi","antara","setelah","sebelum","seperti","karena","sebab",
+    "meski","walaupun","ialah","adalah","merupakan","dalam","demi","per","serta",
 }
 
+# Plotly template putih
+pio.templates["eda_white"] = go.layout.Template(layout=go.Layout(
+    paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC",
+    font=dict(family="Inter,Segoe UI,Arial,sans-serif", color="#1E293B", size=13),
+    title=dict(font=dict(size=15, color="#1E293B"), x=0.02),
+    colorway=["#2563EB","#16A34A","#DC2626","#D97706","#7C3AED","#0891B2"],
+    xaxis=dict(gridcolor="#E2E8F0", linecolor="#CBD5E1",
+               tickfont=dict(color="#475569", size=12), zerolinecolor="#E2E8F0"),
+    yaxis=dict(gridcolor="#E2E8F0", linecolor="#CBD5E1",
+               tickfont=dict(color="#475569", size=12), zerolinecolor="#E2E8F0"),
+    legend=dict(bgcolor="rgba(255,255,255,.95)", bordercolor="#E2E8F0",
+                borderwidth=1, font=dict(size=12, color="#1E293B")),
+    hoverlabel=dict(bgcolor="#1E293B", font_color="#F8FAFC",
+                    bordercolor="#1E293B", font_size=13),
+))
+pio.templates.default = "eda_white"
 
-# ══════════════════════════════════════════════════════════════════════════
-# DATA LOADING & CACHING
-# ══════════════════════════════════════════════════════════════════════════
+# ── Data loading ──────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def get_client():
     return MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_data() -> pd.DataFrame:
-    docs = list(
-        get_client()[MONGO_DB][SOURCE_COL].find(
-            {"text_final": {"$exists": True, "$ne": ""},
-             "sentiment":  {"$exists": True, "$nin": [None, ""]}},
-            {"_id": 0, "text_final": 1, "sentiment": 1,
-             "text_original": 1, "video_id": 1, "comment_id": 1},
-        )
-    )
-    df = pd.DataFrame(docs)
-    if df.empty:
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Return (df_manual, df_full):
+      - df_manual : 2000 data berlabel manual dari comments_sentiment
+      - df_full   : 13446 data gabungan dari full_comments_sentiment
+                    (sudah include kolom tanggal, video_id, like_count dari join)
+    """
+    # ── Helper: join tanggal + video info dari collection comments ────────────
+    def _enrich(df: pd.DataFrame) -> pd.DataFrame:
+        dates = list(get_client()[MONGO_DB][COMMENTS_COL].find(
+            {"comment_id": {"$exists": True}, "published_at": {"$exists": True}},
+            {"_id": 0, "comment_id": 1, "published_at": 1,
+             "video_id": 1, "like_count": 1},
+        ))
+        dates_df = pd.DataFrame(dates)
+        if not dates_df.empty:
+            df = df.merge(dates_df, on="comment_id", how="left")
+            df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True)
+            df["date"] = df["published_at"].dt.date
+        else:
+            df["date"] = None
+            df["video_id"] = df.get("video_id", None)
+            df["like_count"] = 0
+
+        df["like_count"] = pd.to_numeric(df.get("like_count", 0), errors="coerce").fillna(0).astype(int)
+        df["video_id"]   = df.get("video_id", "")
+        df["video_title"] = df["video_id"].map(VIDEO_TITLES).fillna(df["video_id"])
+        df["video_short"] = df["video_title"].apply(
+            lambda t: t[:40] + "…" if len(str(t)) > 40 else t)
+
+        # Fitur teks
+        df["text_len"]    = df["text_final"].str.len()
+        df["token_count"] = df["text_final"].str.split().str.len()
+        df["unique_tokens"] = df["text_final"].apply(lambda t: len(set(str(t).split())))
+        df["lexical_diversity"] = (
+            df["unique_tokens"] / df["token_count"].replace(0, np.nan)
+        ).round(4)
+        df["avg_word_len"] = df["text_final"].apply(
+            lambda t: round(np.mean([len(w) for w in str(t).split()]), 2)
+            if str(t).split() else 0)
         return df
-    df["text_len"]    = df["text_final"].str.len()
-    df["token_count"] = df["text_final"].str.split().str.len()
-    df["unique_tokens"] = df["text_final"].apply(lambda t: len(set(str(t).split())))
-    df["lexical_diversity"] = (
-        df["unique_tokens"] / df["token_count"].replace(0, np.nan)
-    ).round(4)
-    df["avg_word_len"] = df["text_final"].apply(
-        lambda t: np.mean([len(w) for w in str(t).split()]) if str(t).split() else 0
-    ).round(2)
-    # Tambahkan judul video (short label untuk chart)
-    df["video_title"] = df["video_id"].map(VIDEO_TITLES).fillna(df["video_id"])
-    df["video_short"] = df["video_title"].apply(
-        lambda t: t[:45] + "…" if len(str(t)) > 45 else t
-    )
-    return df
+
+    # ── Load data manual (2000) ───────────────────────────────────────────────
+    docs_manual = list(get_client()[MONGO_DB][SOURCE_COL].find(
+        {"text_final": {"$exists": True, "$ne": ""},
+         "sentiment":  {"$exists": True, "$nin": [None, ""]}},
+        {"_id": 0, "comment_id": 1, "video_id": 1,
+         "text_final": 1, "sentiment": 1, "text_original": 1},
+    ))
+    df_manual = pd.DataFrame(docs_manual)
+    if not df_manual.empty:
+        df_manual = _enrich(df_manual)
+        df_manual["data_source"] = "Manual (2.000)"
+
+    # ── Load data full gabungan (13446) ───────────────────────────────────────
+    docs_full = list(get_client()[MONGO_DB][FULL_COL].find(
+        {"text_final": {"$exists": True, "$ne": ""},
+         "sentiment":  {"$exists": True, "$nin": [None, ""]}},
+        {"_id": 0, "comment_id": 1, "text_final": 1, "sentiment": 1},
+    ))
+    df_full = pd.DataFrame(docs_full)
+    if not df_full.empty:
+        df_full = _enrich(df_full)
+        # Tandai asal data
+        manual_ids = set(df_manual["comment_id"].tolist()) if not df_manual.empty else set()
+        df_full["data_source"] = df_full["comment_id"].apply(
+            lambda cid: "Manual (2.000)" if cid in manual_ids else "Auto-label (11.446)"
+        )
+
+    return df_manual, df_full
 
 
 @st.cache_data(show_spinner=False)
-def get_token_freq(df: pd.DataFrame, label: str | None, remove_stop: bool,
-                   top_n: int) -> pd.DataFrame:
-    """Frekuensi token untuk label tertentu (atau semua)."""
+def get_token_freq(df, label, top_n):
     subset = df if label is None else df[df["sentiment"] == label]
-    all_tokens: list[str] = []
+    tokens = []
     for txt in subset["text_final"]:
-        tokens = str(txt).split()
-        if remove_stop:
-            tokens = [t for t in tokens if t not in STOPWORDS_EXTRA and len(t) > 1]
-        all_tokens.extend(tokens)
-    total_tokens = len(all_tokens)
-    counter = Counter(all_tokens).most_common(top_n)
-    result = pd.DataFrame(counter, columns=["kata", "frekuensi"])
-    result["persentase"] = (result["frekuensi"] / total_tokens * 100).round(3)
-    result["rank"] = range(1, len(result) + 1)
-    return result, total_tokens
+        for t in str(txt).split():
+            if t not in STOPWORDS and len(t) > 2 and t.isalpha():
+                tokens.append(t)
+    total = len(tokens)
+    rows = pd.DataFrame(Counter(tokens).most_common(top_n), columns=["kata","frekuensi"])
+    rows["persen"] = (rows["frekuensi"] / total * 100).round(2)
+    return rows, total
 
 
 @st.cache_data(show_spinner=False)
-def get_ngram_freq(df: pd.DataFrame, label: str | None, n: int,
-                   remove_stop: bool, top_n: int) -> pd.DataFrame:
-    """Frekuensi n-gram."""
+def get_ngram_freq(df, label, n, top_n):
     subset = df if label is None else df[df["sentiment"] == label]
-    ngrams: list[str] = []
+    ngrams = []
     for txt in subset["text_final"]:
-        tokens = str(txt).split()
-        if remove_stop:
-            tokens = [t for t in tokens if t not in STOPWORDS_EXTRA and len(t) > 1]
-        ngrams.extend([" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)])
+        words = [w for w in str(txt).split()
+                 if w not in STOPWORDS and len(w) > 2 and w.isalpha()]
+        ngrams.extend([" ".join(words[i:i+n]) for i in range(len(words)-n+1)])
     total = len(ngrams)
-    counter = Counter(ngrams).most_common(top_n)
-    result = pd.DataFrame(counter, columns=["ngram", "frekuensi"])
-    result["persentase"] = (result["frekuensi"] / total * 100).round(3)
-    return result, total
+    rows = pd.DataFrame(Counter(ngrams).most_common(top_n), columns=["ngram","frekuensi"])
+    rows["persen"] = (rows["frekuensi"] / total * 100).round(2)
+    return rows, total
 
 
 @st.cache_data(show_spinner=False)
-def get_wordcloud_img(df: pd.DataFrame, label: str | None,
-                      remove_stop: bool, bg_color: str) -> bytes:
-    """Generate word cloud sebagai bytes PNG."""
+def get_wordcloud_img(df, label, bg):
     subset = df if label is None else df[df["sentiment"] == label]
-    all_text = " ".join(
-        t for txt in subset["text_final"]
-        for t in str(txt).split()
-        if (not remove_stop or (t not in STOPWORDS_EXTRA and len(t) > 1))
+    text = " ".join(
+        w for txt in subset["text_final"]
+        for w in str(txt).split()
+        if w not in STOPWORDS and len(w) > 2 and w.isalpha()
     )
-    wc = WordCloud(
-        width=800, height=400,
-        background_color=bg_color,
-        colormap="RdYlGn" if label == "positif" else
-                 "Blues"   if label == "netral"  else
-                 "Reds"    if label == "negatif" else "viridis",
-        max_words=150,
-        collocations=False,
-        random_state=SEED,
-    ).generate(all_text or "tidak ada data")
+    cmap = ("Greens" if label=="positif" else "Blues" if label=="netral"
+            else "Reds" if label=="negatif" else "viridis")
+    wc = WordCloud(width=900, height=400, background_color=bg,
+                   colormap=cmap, max_words=120, collocations=False,
+                   random_state=SEED).generate(text or "kosong")
     buf = io.BytesIO()
     wc.to_image().save(buf, format="PNG")
     return buf.getvalue()
 
-
-@st.cache_data(show_spinner=False)
-def get_cross_label_freq(df: pd.DataFrame, remove_stop: bool, top_n: int) -> pd.DataFrame:
-    """Frekuensi kata per label — untuk heatmap perbandingan."""
-    records = []
-    for lbl in VALID_LABELS:
-        subset = df[df["sentiment"] == lbl]
-        all_tokens = []
-        for txt in subset["text_final"]:
-            tokens = str(txt).split()
-            if remove_stop:
-                tokens = [t for t in tokens if t not in STOPWORDS_EXTRA and len(t) > 1]
-            all_tokens.extend(tokens)
-        total = len(all_tokens)
-        for word, cnt in Counter(all_tokens).most_common(top_n):
-            records.append({
-                "kata": word, "sentimen": lbl,
-                "frekuensi": cnt,
-                "persen": round(cnt / total * 100, 3) if total else 0,
-            })
-    return pd.DataFrame(records)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# SIDEBAR
-# ══════════════════════════════════════════════════════════════════════════
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("📊 EDA Sentimen")
-    st.caption("Eksplorasi Data Komentar YouTube")
+    st.title("EDA Sentimen")
+    st.caption("Analisis Komentar YouTube")
     st.divider()
-
-    # Koneksi
     try:
         get_client().admin.command("ping")
-        st.success("MongoDB terhubung ✅")
+        st.success("MongoDB terhubung")
     except Exception:
-        st.error("MongoDB tidak terhubung ❌")
-
+        st.error("MongoDB tidak terhubung")
     st.divider()
-    st.subheader("⚙️ Pengaturan Analisis")
-
-    remove_stop = st.toggle(
-        "Hapus stopword umum", value=True,
-        help="Hapus kata-kata sangat umum (yang, dan, di, dll.) dari analisis frekuensi"
-    )
-    top_n_words = st.slider("Top N kata ditampilkan", 5, 50, 20)
-    top_n_ngram = st.slider("Top N n-gram ditampilkan", 5, 30, 15)
-
+    st.subheader("Pengaturan")
+    top_n_words = st.slider("Top N kata", 5, 40, 20)
+    top_n_ngram = st.slider("Top N n-gram", 5, 25, 15)
     st.divider()
-    if st.button("🔄 Refresh Data", use_container_width=True):
+    if st.button("Refresh Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    st.divider()
-    st.caption(f"DB: `{MONGO_DB}`")
-    st.caption(f"Collection: `{SOURCE_COL}`")
-
-# ══════════════════════════════════════════════════════════════════════════
-# LOAD DATA
-# ══════════════════════════════════════════════════════════════════════════
-with st.spinner("Memuat data dari MongoDB..."):
-    df = load_data()
+# ── Load ──────────────────────────────────────────────────────────────────────
+with st.spinner("Memuat data..."):
+    df_manual, df = load_data()   # df = 13446 gabungan, df_manual = 2000 manual
 
 if df.empty:
-    st.error("Data tidak ditemukan di collection `comments_sentiment`.")
+    st.error("Data tidak ditemukan.")
     st.stop()
 
-total = len(df)
-n_pos = int((df["sentiment"] == "positif").sum())
-n_net = int((df["sentiment"] == "netral").sum())
-n_neg = int((df["sentiment"] == "negatif").sum())
-total_tokens_all = df["token_count"].sum()
-vocab_size = len(set(
-    t for txt in df["text_final"]
-    for t in str(txt).split()
-    if (not remove_stop or t not in STOPWORDS_EXTRA)
-))
+# df digunakan untuk semua tab kecuali distribusi (yang pakai keduanya)
+total     = len(df)
+total_m   = len(df_manual)
+total_a   = total - total_m
+n_pos     = int((df["sentiment"]=="positif").sum())
+n_net     = int((df["sentiment"]=="netral").sum())
+n_neg     = int((df["sentiment"]=="negatif").sum())
+has_date  = df["date"].notna().sum() > 10
 
-# ══════════════════════════════════════════════════════════════════════════
-# HEADER + KPI
-# ══════════════════════════════════════════════════════════════════════════
-st.title("📊 EDA — Analisis Sentimen Komentar YouTube")
-st.caption(
-    "Eksplorasi mendalam data teks: distribusi sentimen, frekuensi kata, "
-    "n-gram, word cloud, dan karakteristik linguistik."
-)
+# ── Header KPI ────────────────────────────────────────────────────────────────
+st.title("Analisis Sentimen Komentar YouTube")
+st.caption("Eksplorasi distribusi sentimen, tren waktu, frekuensi kata, dan insight penting.")
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("📝 Total Komentar",   f"{total:,}")
-c2.metric("😊 Positif",          f"{n_pos:,}",  f"{n_pos/total*100:.1f}%")
-c3.metric("😐 Netral",           f"{n_net:,}",  f"{n_net/total*100:.1f}%")
-c4.metric("😠 Negatif",          f"{n_neg:,}",  f"{n_neg/total*100:.1f}%")
-c5.metric("🔤 Total Token",      f"{int(total_tokens_all):,}")
-c6.metric("📚 Ukuran Vocab",     f"{vocab_size:,}")
-
+k1,k2,k3,k4,k5,k6 = st.columns(6)
+k1.metric("Total Data Gabungan", f"{total:,}")
+k2.metric("Manual Labeled",      f"{total_m:,}")
+k3.metric("Auto Labeled",        f"{total_a:,}")
+k4.metric("Positif",  f"{n_pos:,}",  f"{n_pos/total*100:.1f}%")
+k5.metric("Netral",   f"{n_net:,}",  f"{n_net/total*100:.1f}%")
+k6.metric("Negatif",  f"{n_neg:,}",  f"{n_neg/total*100:.1f}%")
 st.divider()
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# TABS
-# ══════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🏷️ Distribusi Data",
-    "📏 Karakteristik Teks",
-    "🔤 Frekuensi Kata",
-    "☁️ Word Cloud",
-    "🔗 N-Gram",
-    "📊 Perbandingan Lintas Label",
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Distribusi Sentimen",
+    "Tren Waktu",
+    "Frekuensi Kata",
+    "N-Gram & Word Cloud",
+    "Insight per Video",
 ])
 
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 1 — DISTRIBUSI DATA
-# ─────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — DISTRIBUSI SENTIMEN
+# ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
-    st.subheader("🏷️ Distribusi Label Sentimen")
+    st.subheader("Distribusi Label Sentimen")
 
-    # Pie + Bar side by side
-    col_a, col_b = st.columns(2)
-    with col_a:
-        cnt = df["sentiment"].value_counts()
-        colors = [LABEL_COLORS[l] for l in cnt.index]
-        fig = go.Figure(go.Pie(
-            labels=cnt.index, values=cnt.values,
-            marker_colors=colors, hole=0.42,
-            textinfo="label+percent+value",
-            hovertemplate="<b>%{label}</b><br>%{value} komentar (%{percent})<extra></extra>",
-        ))
-        fig.update_layout(title="Proporsi Label Sentimen", height=400,
-                          margin=dict(t=50, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+    # ── Sub-tab: Perbandingan Manual vs Auto vs Gabungan ──────────────────────
+    dist_tab1, dist_tab2, dist_tab3 = st.tabs([
+        f"Manual Label ({total_m:,} data)",
+        f"Auto Label ({total_a:,} data)",
+        f"Gabungan ({total:,} data)",
+    ])
 
-    with col_b:
-        cnt_df = cnt.reset_index()
-        cnt_df.columns = ["sentimen", "jumlah"]
-        cnt_df["persentase"] = (cnt_df["jumlah"] / total * 100).round(2)
-        fig = go.Figure(go.Bar(
-            x=cnt_df["sentimen"], y=cnt_df["jumlah"],
-            marker_color=[LABEL_COLORS[l] for l in cnt_df["sentimen"]],
-            text=[f"{r.jumlah:,}<br>({r.persentase:.1f}%)" for r in cnt_df.itertuples()],
-            textposition="outside",
-        ))
-        fig.update_layout(
-            title="Jumlah Komentar per Label",
-            yaxis=dict(range=[0, cnt_df["jumlah"].max() * 1.25]),
-            height=400, margin=dict(t=50, b=10),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    def _dist_charts(ddf: pd.DataFrame, label: str):
+        """Render bar + pie + lollipop untuk satu dataset."""
+        tot   = len(ddf)
+        n_p   = int((ddf["sentiment"]=="positif").sum())
+        n_n_  = int((ddf["sentiment"]=="netral").sum())
+        n_ng  = int((ddf["sentiment"]=="negatif").sum())
 
-    st.divider()
-
-    # Class imbalance lollipop
-    st.markdown("#### ⚖️ Class Imbalance")
-    ideal = 100 / len(VALID_LABELS)
-    fig_lo = go.Figure()
-    for lbl in VALID_LABELS:
-        pct = df[df["sentiment"] == lbl].shape[0] / total * 100
-        color = LABEL_COLORS[lbl]
-        fig_lo.add_trace(go.Scatter(
-            x=[0, pct], y=[lbl, lbl], mode="lines",
-            line=dict(color=color, width=4), showlegend=False,
-        ))
-        fig_lo.add_trace(go.Scatter(
-            x=[pct], y=[lbl], mode="markers+text",
-            marker=dict(size=20, color=color, line=dict(width=2, color="white")),
-            text=f"  {pct:.1f}%  ({df[df['sentiment']==lbl].shape[0]:,} komentar)",
-            textposition="middle right", showlegend=False,
-        ))
-    fig_lo.add_vline(x=ideal, line_dash="dash", line_color="#888",
-                     annotation_text=f"Ideal (seimbang) = {ideal:.1f}%",
-                     annotation_position="top right")
-    fig_lo.update_layout(
-        title="Class Imbalance — Persentase Aktual vs Ideal Seimbang",
-        xaxis=dict(title="Persentase (%)", range=[0, 70]),
-        height=280, margin=dict(t=50, b=20, l=80),
-    )
-    st.plotly_chart(fig_lo, use_container_width=True)
-    st.caption(
-        f"💡 Data **tidak seimbang**: negatif ({n_neg/total*100:.1f}%) mendominasi, "
-        f"positif ({n_pos/total*100:.1f}%) paling sedikit — "
-        f"rasio negatif:positif = {n_neg//max(n_pos,1)}:1"
-    )
-
-    st.divider()
-
-    # Distribusi per video
-    if "video_id" in df.columns and df["video_id"].nunique() > 1:
-        st.markdown("#### 🎬 Distribusi per Video")
-        cv1, cv2 = st.columns(2)
-        gdf = df.groupby(["video_short","sentiment"]).size().reset_index(name="n")
-        with cv1:
-            fig = px.bar(
-                gdf, x="video_short", y="n", color="sentiment",
-                color_discrete_map=LABEL_COLORS, barmode="stack",
-                title="Jumlah Komentar per Video (stacked)",
-                labels={"video_short": "Judul Video", "n": "Jumlah"},
-                text="n",
-            )
-            fig.update_layout(
-                height=480, margin=dict(t=50, b=160),
-                xaxis_tickangle=-30,
-                legend=dict(orientation="h", y=1.06),
-            )
-            fig.update_xaxes(tickfont=dict(size=11))
-            st.plotly_chart(fig, use_container_width=True)
-        with cv2:
-            tot_vid = gdf.groupby("video_short")["n"].transform("sum")
-            gdf["pct"] = (gdf["n"] / tot_vid * 100).round(1)
-            fig = px.bar(
-                gdf, x="video_short", y="pct", color="sentiment",
-                color_discrete_map=LABEL_COLORS, barmode="stack",
-                title="Persentase Sentimen per Video (%)",
-                labels={"video_short": "Judul Video", "pct": "Persentase (%)"},
-                text=gdf["pct"].apply(lambda v: f"{v:.0f}%"),
-            )
-            fig.update_yaxes(range=[0, 105])
-            fig.update_layout(
-                height=480, margin=dict(t=50, b=160),
-                xaxis_tickangle=-30,
-                legend=dict(orientation="h", y=1.06),
-            )
-            fig.update_xaxes(tickfont=dict(size=11))
-            st.plotly_chart(fig, use_container_width=True)
-
-        # Tabel mapping video
-        st.markdown("##### 🗂️ Daftar Video")
-        vid_tbl = (
-            df.groupby(["video_id", "video_title"])
-            .agg(Total_Komentar=("comment_id", "count"))
-            .reset_index()
-        )
-        vid_tbl_sent = df.groupby(["video_id", "sentiment"]).size().unstack(fill_value=0).reset_index()
-        vid_tbl = vid_tbl.merge(vid_tbl_sent, on="video_id", how="left")
-        vid_tbl = vid_tbl.rename(columns={
-            "video_id": "Video ID", "video_title": "Judul Video",
-            "Total_Komentar": "Total",
-        })
-        st.dataframe(vid_tbl, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # Tabel ringkasan
-    st.markdown("#### 📋 Ringkasan Statistik Label")
-    tbl = []
-    for lbl in VALID_LABELS:
-        sub = df[df["sentiment"] == lbl]
-        tbl.append({
-            "Sentimen":       lbl,
-            "Jumlah":         len(sub),
-            "% dari Total":   f"{len(sub)/total*100:.2f}%",
-            "Rata-rata Token":f"{sub['token_count'].mean():.1f}",
-            "Median Token":   f"{sub['token_count'].median():.0f}",
-            "Rata-rata Karakter": f"{sub['text_len'].mean():.0f}",
-        })
-    st.dataframe(pd.DataFrame(tbl), use_container_width=True, hide_index=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 2 — KARAKTERISTIK TEKS
-# ─────────────────────────────────────────────────────────────────────────
-with tab2:
-    st.subheader("📏 Karakteristik Linguistik Teks")
-
-    # Histogram panjang karakter
-    st.markdown("#### 📐 Distribusi Panjang Teks")
-    ch1, ch2 = st.columns(2)
-    with ch1:
-        fig = px.histogram(
-            df, x="text_len", color="sentiment",
-            color_discrete_map=LABEL_COLORS, nbins=60,
-            barmode="overlay", opacity=0.70, marginal="box",
-            title="Distribusi Panjang Karakter per Sentimen",
-            labels={"text_len": "Panjang (karakter)"},
-        )
-        fig.update_layout(height=420, margin=dict(t=50,b=10),
-                          legend=dict(orientation="h", y=1.08))
-        st.plotly_chart(fig, use_container_width=True)
-    with ch2:
-        fig = px.histogram(
-            df, x="token_count", color="sentiment",
-            color_discrete_map=LABEL_COLORS, nbins=60,
-            barmode="overlay", opacity=0.70, marginal="box",
-            title="Distribusi Jumlah Token per Sentimen",
-            labels={"token_count": "Jumlah Token"},
-        )
-        fig.update_layout(height=420, margin=dict(t=50,b=10),
-                          legend=dict(orientation="h", y=1.08))
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    # Violin plot
-    cv1, cv2 = st.columns(2)
-    with cv1:
-        fig = px.violin(df, x="sentiment", y="text_len",
-                        color="sentiment", color_discrete_map=LABEL_COLORS,
-                        box=True, points=False,
-                        title="Violin — Panjang Karakter per Sentimen")
-        fig.update_layout(height=400, margin=dict(t=50,b=10), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-    with cv2:
-        fig = px.violin(df, x="sentiment", y="token_count",
-                        color="sentiment", color_discrete_map=LABEL_COLORS,
-                        box=True, points=False,
-                        title="Violin — Jumlah Token per Sentimen")
-        fig.update_layout(height=400, margin=dict(t=50,b=10), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    # Lexical diversity & avg word len
-    st.markdown("#### 🧠 Diversitas Leksikal & Panjang Rata-rata Kata")
-    cl1, cl2 = st.columns(2)
-    with cl1:
-        fig = px.box(df, x="sentiment", y="lexical_diversity",
-                     color="sentiment", color_discrete_map=LABEL_COLORS,
-                     points="outliers", notched=True,
-                     title="Lexical Diversity (unique tokens / total tokens)",
-                     labels={"lexical_diversity":"Diversity Index"})
-        fig.update_layout(height=380, margin=dict(t=50,b=10), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-    with cl2:
-        fig = px.box(df, x="sentiment", y="avg_word_len",
-                     color="sentiment", color_discrete_map=LABEL_COLORS,
-                     points="outliers", notched=True,
-                     title="Rata-rata Panjang Kata per Komentar",
-                     labels={"avg_word_len":"Avg Word Length (karakter)"})
-        fig.update_layout(height=380, margin=dict(t=50,b=10), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    # Scatter token_count vs text_len
-    st.markdown("#### 🔵 Korelasi: Jumlah Token vs Panjang Karakter")
-    sample_df = df.sample(min(800, len(df)), random_state=SEED)
-    fig = px.scatter(
-        sample_df,
-        x="token_count", y="text_len",
-        color="sentiment", color_discrete_map=LABEL_COLORS,
-        opacity=0.65,
-        title="Scatter: Jumlah Token vs Panjang Karakter (sample 800)",
-        labels={"token_count":"Jumlah Token", "text_len":"Panjang Karakter"},
-    )
-    # Trendline manual dengan numpy (tanpa statsmodels)
-    x_all = sample_df["token_count"].values
-    y_all = sample_df["text_len"].values
-    mask  = ~(np.isnan(x_all) | np.isnan(y_all))
-    if mask.sum() > 2:
-        coef  = np.polyfit(x_all[mask], y_all[mask], 1)
-        x_line = np.array([x_all[mask].min(), x_all[mask].max()])
-        y_line = np.polyval(coef, x_line)
-        fig.add_trace(go.Scatter(
-            x=x_line, y=y_line, mode="lines",
-            line=dict(color="black", width=2, dash="dash"),
-            name=f"Trendline (semua)  y={coef[0]:.1f}x+{coef[1]:.0f}",
-        ))
-    fig.update_layout(height=420, margin=dict(t=50,b=10),
-                      legend=dict(orientation="h", y=1.08))
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    # Statistik deskriptif tabel
-    st.markdown("#### 📋 Statistik Deskriptif Lengkap per Label")
-    stats = (
-        df.groupby("sentiment").agg(
-            Jumlah=("text_final","count"),
-            Rata_Karakter=("text_len","mean"),
-            Median_Karakter=("text_len","median"),
-            Std_Karakter=("text_len","std"),
-            Min_Karakter=("text_len","min"),
-            Max_Karakter=("text_len","max"),
-            Rata_Token=("token_count","mean"),
-            Median_Token=("token_count","median"),
-            Std_Token=("token_count","std"),
-            Rata_Diversity=("lexical_diversity","mean"),
-            Rata_AvgWordLen=("avg_word_len","mean"),
-        ).round(2).reset_index()
-    )
-    stats.columns = [
-        "Sentimen","Jumlah","Rata Karakter","Median Karakter","Std Karakter",
-        "Min Karakter","Max Karakter","Rata Token","Median Token","Std Token",
-        "Rata Diversity","Rata AvgWordLen",
-    ]
-    st.dataframe(stats, use_container_width=True, hide_index=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 3 — FREKUENSI KATA
-# ─────────────────────────────────────────────────────────────────────────
-with tab3:
-    st.subheader("🔤 Frekuensi & Persentase Kata")
-
-    # Selector label
-    col_sel, col_info = st.columns([2, 3])
-    with col_sel:
-        sel_label = st.selectbox(
-            "Tampilkan kata untuk:",
-            ["Semua Label"] + VALID_LABELS,
-            key="t3_label",
-        )
-    label_key = None if sel_label == "Semua Label" else sel_label
-
-    freq_df, total_tok = get_token_freq(df, label_key, remove_stop, top_n_words)
-    with col_info:
-        st.info(
-            f"📊 **{sel_label}** — {total_tok:,} total token "
-            f"| {len(freq_df)} kata ditampilkan"
-            f"{'  |  Stopword dihapus ✓' if remove_stop else ''}",
-        )
-
-    if freq_df.empty:
-        st.warning("Tidak ada data.")
-    else:
-        # Bar chart frekuensi
-        bar_color = (LABEL_COLORS.get(label_key, "#3498DB")
-                     if label_key else "#8E44AD")
-        fig = go.Figure(go.Bar(
-            x=freq_df["kata"],
-            y=freq_df["frekuensi"],
-            marker_color=bar_color,
-            text=freq_df["frekuensi"],
-            textposition="outside",
-            customdata=freq_df[["persentase","rank"]].values,
-            hovertemplate=(
-                "<b>%{x}</b><br>"
-                "Frekuensi: %{y:,}<br>"
-                "Persentase: %{customdata[0]:.3f}%<br>"
-                "Rank: #%{customdata[1]}<extra></extra>"
-            ),
-        ))
-        fig.update_layout(
-            title=f"Top {top_n_words} Kata Terbanyak — {sel_label}",
-            xaxis_tickangle=-35,
-            yaxis_title="Frekuensi",
-            yaxis=dict(range=[0, freq_df["frekuensi"].max() * 1.2]),
-            height=450, margin=dict(t=60, b=80),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Bar chart persentase
-        fig2 = go.Figure(go.Bar(
-            x=freq_df["kata"],
-            y=freq_df["persentase"],
-            marker_color=bar_color,
-            text=freq_df["persentase"].apply(lambda v: f"{v:.2f}%"),
-            textposition="outside",
-            hovertemplate="<b>%{x}</b><br>%{y:.3f}% dari total token<extra></extra>",
-        ))
-        fig2.update_layout(
-            title=f"Persentase Kata dari Total Token — {sel_label}",
-            xaxis_tickangle=-35,
-            yaxis_title="Persentase (%)",
-            yaxis=dict(range=[0, freq_df["persentase"].max() * 1.25]),
-            height=450, margin=dict(t=60, b=80),
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-
-        st.divider()
-
-        # Horizontal bar (lebih mudah dibaca untuk banyak kata)
-        fig3 = go.Figure(go.Bar(
-            y=freq_df["kata"][::-1],
-            x=freq_df["frekuensi"][::-1],
-            orientation="h",
-            marker=dict(
-                color=freq_df["frekuensi"][::-1],
-                colorscale="Blues", showscale=True,
-                colorbar=dict(title="Frekuensi"),
-            ),
-            text=freq_df.apply(
-                lambda r: f"{r['frekuensi']:,}  ({r['persentase']:.2f}%)", axis=1
-            )[::-1],
-            textposition="outside",
-        ))
-        fig3.update_layout(
-            title=f"Top {top_n_words} Kata — Horizontal (dengan %)",
-            xaxis_title="Frekuensi",
-            height=max(400, top_n_words * 22),
-            margin=dict(t=60, b=20, l=120),
-        )
-        st.plotly_chart(fig3, use_container_width=True)
-
-        st.divider()
-
-        # Tabel lengkap
-        st.markdown("#### 📋 Tabel Frekuensi Lengkap")
-        display_df = freq_df.copy()
-        display_df.columns = ["Kata","Frekuensi","Persentase (%)","Rank"]
-        display_df["Kumulatif (%)"] = display_df["Persentase (%)"].cumsum().round(3)
-        st.dataframe(
-            display_df.style.background_gradient(subset=["Frekuensi"], cmap="Blues")
-                            .format({"Persentase (%)": "{:.3f}%",
-                                     "Kumulatif (%)": "{:.2f}%"}),
-            use_container_width=True, hide_index=True, height=400,
-        )
-        st.caption(
-            f"💡 Top {min(10,top_n_words)} kata menyumbang "
-            f"**{display_df['Persentase (%)'].head(10).sum():.1f}%** dari total token."
-        )
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 4 — WORD CLOUD
-# ─────────────────────────────────────────────────────────────────────────
-with tab4:
-    st.subheader("☁️ Word Cloud per Sentimen")
-
-    wc_tabs = st.tabs(["😊 Positif", "😐 Netral", "😠 Negatif", "🌐 Semua"])
-    wc_configs = [
-        ("positif", "Positif",  "#f0fff4"),
-        ("netral",  "Netral",   "#f0f8ff"),
-        ("negatif", "Negatif",  "#fff5f5"),
-        (None,      "Semua Label", "#f5f5f5"),
-    ]
-    for wc_tab, (lbl, lbl_name, bg) in zip(wc_tabs, wc_configs):
-        with wc_tab:
-            subset_size = len(df) if lbl is None else int((df["sentiment"]==lbl).sum())
-            st.caption(f"**{lbl_name}** — {subset_size:,} komentar")
-            with st.spinner(f"Membuat word cloud {lbl_name}..."):
-                img_bytes = get_wordcloud_img(df, lbl, remove_stop, bg)
-            st.image(img_bytes, use_container_width=True)
-
-            # Juga tampilkan top 20 kata di bawah word cloud
-            freq_wc, total_wc = get_token_freq(df, lbl, remove_stop, 20)
-            if not freq_wc.empty:
-                color_wc = LABEL_COLORS.get(lbl, "#8E44AD") if lbl else "#8E44AD"
-                fig_wc = go.Figure(go.Bar(
-                    y=freq_wc["kata"][::-1],
-                    x=freq_wc["frekuensi"][::-1],
-                    orientation="h",
-                    marker_color=color_wc,
-                    text=freq_wc.apply(
-                        lambda r: f"{r['frekuensi']:,} ({r['persentase']:.2f}%)", axis=1
-                    )[::-1],
-                    textposition="outside",
-                ))
-                fig_wc.update_layout(
-                    title=f"Top 20 Kata — {lbl_name}",
-                    xaxis_title="Frekuensi",
-                    height=520, margin=dict(t=50,b=10,l=100),
-                )
-                st.plotly_chart(fig_wc, use_container_width=True)
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 5 — N-GRAM
-# ─────────────────────────────────────────────────────────────────────────
-with tab5:
-    st.subheader("🔗 Analisis N-Gram")
-
-    col_ng1, col_ng2, col_ng3 = st.columns(3)
-    with col_ng1:
-        sel_n = st.radio("Tipe N-Gram:", [("Bigram (2)", 2), ("Trigram (3)", 3)],
-                         format_func=lambda x: x[0], key="t5_n")
-        n_val = sel_n[1]
-    with col_ng2:
-        sel_lbl_ng = st.selectbox("Label:", ["Semua Label"]+VALID_LABELS, key="t5_lbl")
-        label_ng = None if sel_lbl_ng == "Semua Label" else sel_lbl_ng
-    with col_ng3:
-        st.markdown("&nbsp;")
-        st.info(f"N = **{n_val}** | Label: **{sel_lbl_ng}**")
-
-    ngram_df, total_ng = get_ngram_freq(df, label_ng, n_val, remove_stop, top_n_ngram)
-
-    if ngram_df.empty:
-        st.warning("Tidak ada data n-gram.")
-    else:
-        ng_color = LABEL_COLORS.get(label_ng, "#8E44AD") if label_ng else "#8E44AD"
-
-        cn1, cn2 = st.columns(2)
-        with cn1:
+        c1, c2 = st.columns(2)
+        with c1:
             fig = go.Figure(go.Bar(
-                x=ngram_df["ngram"],
-                y=ngram_df["frekuensi"],
-                marker_color=ng_color,
-                text=ngram_df["frekuensi"],
+                x=["Positif","Netral","Negatif"], y=[n_p, n_n_, n_ng],
+                marker_color=[LABEL_COLORS["positif"],LABEL_COLORS["netral"],LABEL_COLORS["negatif"]],
+                text=[f"{n_p:,}<br>{n_p/tot*100:.1f}%",
+                      f"{n_n_:,}<br>{n_n_/tot*100:.1f}%",
+                      f"{n_ng:,}<br>{n_ng/tot*100:.1f}%"],
                 textposition="outside",
-                hovertemplate="<b>%{x}</b><br>Frek: %{y:,}<extra></extra>",
             ))
             fig.update_layout(
-                title=f"Top {top_n_ngram} {sel_n[0]} — Frekuensi",
-                xaxis_tickangle=-40,
-                yaxis=dict(range=[0, ngram_df["frekuensi"].max()*1.2]),
-                height=460, margin=dict(t=60,b=120),
+                title=f"Jumlah Komentar — {label}",
+                yaxis_title="Jumlah",
+                yaxis=dict(range=[0, max(n_p,n_n_,n_ng)*1.28]),
+                height=420, margin=dict(t=55,b=15),
             )
             st.plotly_chart(fig, use_container_width=True)
-
-        with cn2:
-            fig2 = go.Figure(go.Bar(
-                y=ngram_df["ngram"][::-1],
-                x=ngram_df["persentase"][::-1],
-                orientation="h",
-                marker=dict(color=ngram_df["persentase"][::-1],
-                            colorscale="Purples", showscale=True),
-                text=ngram_df["persentase"].apply(lambda v: f"{v:.3f}%")[::-1],
-                textposition="outside",
+        with c2:
+            fig = go.Figure(go.Pie(
+                labels=["Positif","Netral","Negatif"],
+                values=[n_p, n_n_, n_ng],
+                marker_colors=[LABEL_COLORS["positif"],LABEL_COLORS["netral"],LABEL_COLORS["negatif"]],
+                hole=0.45, textinfo="label+percent", textfont_size=14,
+                hovertemplate="<b>%{label}</b><br>%{value:,}<br>%{percent}<extra></extra>",
             ))
-            fig2.update_layout(
-                title=f"Top {top_n_ngram} {sel_n[0]} — Persentase",
-                xaxis_title="Persentase (%)",
-                height=460, margin=dict(t=60,b=20,l=160),
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+            fig.update_layout(title=f"Proporsi Sentimen — {label}",
+                              height=420, margin=dict(t=55,b=15))
+            st.plotly_chart(fig, use_container_width=True)
 
+        # Lollipop imbalance
+        ideal = 100/3
+        fig_lo = go.Figure()
+        for lbl, n in [("positif",n_p),("netral",n_n_),("negatif",n_ng)]:
+            pct = n/tot*100
+            fig_lo.add_trace(go.Scatter(
+                x=[0,pct], y=[lbl,lbl], mode="lines",
+                line=dict(color=LABEL_COLORS[lbl], width=5), showlegend=False))
+            fig_lo.add_trace(go.Scatter(
+                x=[pct], y=[lbl], mode="markers+text",
+                marker=dict(size=22, color=LABEL_COLORS[lbl],
+                            line=dict(width=2, color="white")),
+                text=f"  {pct:.1f}%  ({n:,})",
+                textposition="middle right", showlegend=False))
+        fig_lo.add_vline(x=ideal, line_dash="dash", line_color="#94A3B8",
+                         annotation_text=f"Ideal = {ideal:.1f}%",
+                         annotation_position="top right")
+        fig_lo.update_layout(
+            title=f"Ketidakseimbangan Kelas — {label}",
+            xaxis=dict(title="Persentase (%)", range=[0,80]),
+            height=260, margin=dict(t=50,b=20,l=80))
+        st.plotly_chart(fig_lo, use_container_width=True)
+
+        # Info
+        ci1, ci2 = st.columns(2)
+        with ci1:
+            st.info(f"Rasio negatif : positif = **{n_ng//max(n_p,1)} : 1**")
+        with ci2:
+            dom = max(VALID_LABELS, key=lambda l: (ddf["sentiment"]==l).sum())
+            st.warning(f"Sentimen dominan: **{dom.upper()}** "
+                       f"({(ddf['sentiment']==dom).sum()/tot*100:.1f}%)")
+
+    with dist_tab1:
+        _dist_charts(df_manual, "Manual Label")
+    with dist_tab2:
+        df_auto = df[df["data_source"] == "Auto-label (11.446)"]
+        _dist_charts(df_auto, "Auto Label")
+    with dist_tab3:
+        _dist_charts(df, "Gabungan")
+
+    st.divider()
+
+    # ── Perbandingan manual vs auto (grouped bar) ─────────────────────────────
+    st.markdown("#### Perbandingan Distribusi: Manual vs Auto vs Gabungan")
+    comp_records = []
+    for src_label, ddf in [
+        ("Manual (2.000)", df_manual),
+        ("Auto (11.446)",  df[df["data_source"]=="Auto-label (11.446)"]),
+        ("Gabungan (13.446)", df),
+    ]:
+        tot = len(ddf)
+        for lbl in VALID_LABELS:
+            n = int((ddf["sentiment"]==lbl).sum())
+            comp_records.append({"Sumber": src_label, "Sentimen": lbl.capitalize(),
+                                  "Persentase": round(n/tot*100, 2)})
+    comp_df = pd.DataFrame(comp_records)
+    fig_cmp = px.bar(
+        comp_df, x="Sentimen", y="Persentase", color="Sumber",
+        barmode="group",
+        color_discrete_sequence=["#2563EB","#D97706","#16A34A"],
+        text=comp_df["Persentase"].apply(lambda v: f"{v:.1f}%"),
+        title="Perbandingan Proporsi Sentimen: Manual vs Auto vs Gabungan",
+        labels={"Persentase":"Persentase (%)"},
+    )
+    fig_cmp.update_traces(textposition="outside")
+    fig_cmp.update_layout(yaxis=dict(range=[0,85]),
+                          height=420, margin=dict(t=55,b=15),
+                          legend=dict(orientation="h", y=1.06))
+    st.plotly_chart(fig_cmp, use_container_width=True)
+    st.caption(
+        "Perbandingan ini menunjukkan konsistensi distribusi antara data manual "
+        "dan data auto-label — perbedaan besar mengindikasikan bias pada model labeling."
+    )
+
+    st.divider()
+
+    # ── Like per sentimen (data gabungan) ─────────────────────────────────────
+    st.markdown("#### Rata-rata Jumlah Like per Sentimen (Data Gabungan)")
+    like_df = df.groupby("sentiment")["like_count"].agg(["mean","median","sum"]).round(1).reset_index()
+    like_df.columns = ["Sentimen","Rata-rata Like","Median Like","Total Like"]
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        fig = go.Figure(go.Bar(
+            x=like_df["Sentimen"], y=like_df["Rata-rata Like"],
+            marker_color=[LABEL_COLORS[l] for l in like_df["Sentimen"]],
+            text=like_df["Rata-rata Like"], textposition="outside",
+        ))
+        fig.update_layout(title="Rata-rata Like per Sentimen",
+                          yaxis_title="Rata-rata Like",
+                          yaxis=dict(range=[0, like_df["Rata-rata Like"].max()*1.3]),
+                          height=380, margin=dict(t=55,b=15))
+        st.plotly_chart(fig, use_container_width=True)
+    with lc2:
+        st.dataframe(like_df.style.background_gradient(
+            subset=["Rata-rata Like","Total Like"], cmap="Blues"),
+            use_container_width=True, hide_index=True)
+        st.caption("Komentar bersentimen positif cenderung mendapat lebih banyak like.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — TREN WAKTU
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab2:
+    st.subheader("Tren Sentimen Berdasarkan Waktu")
+
+    if not has_date:
+        st.warning("Data tanggal tidak tersedia.")
+    else:
+        df_dated = df[df["date"].notna()].copy()
+        df_dated["date"] = pd.to_datetime(df_dated["date"])
+
+        # Hitung batas default: periode padat (median ke atas volumenya)
+        daily_all = df_dated.groupby(df_dated["date"].dt.date).size()
+        dense_dates = daily_all[daily_all >= daily_all.quantile(0.4)].index
+        default_start = pd.to_datetime(min(dense_dates)).date()
+        default_end   = pd.to_datetime(max(dense_dates)).date()
+        date_min = df_dated["date"].min().date()
+        date_max = df_dated["date"].max().date()
+
+        st.caption(
+            f"Rentang data: **{date_min.strftime('%d %b %Y')}** — "
+            f"**{date_max.strftime('%d %b %Y')}**  |  "
+            f"Data terpadat: Maret 2025. Gunakan filter di bawah untuk zoom."
+        )
+
+        # ── Filter & granularitas ─────────────────────────────────────────────
+        col_f1, col_f2, col_f3 = st.columns([2,2,2])
+        with col_f1:
+            gran = st.radio("Granularitas:", ["Harian","Mingguan","Bulanan"],
+                            horizontal=True, key="gran")
+        with col_f2:
+            filter_start = st.date_input("Dari tanggal:", value=default_start,
+                                          min_value=date_min, max_value=date_max, key="d_from")
+        with col_f3:
+            filter_end = st.date_input("Sampai tanggal:", value=default_end,
+                                        min_value=date_min, max_value=date_max, key="d_to")
+
+        df_f = df_dated[
+            (df_dated["date"].dt.date >= filter_start) &
+            (df_dated["date"].dt.date <= filter_end)
+        ].copy()
+
+        if df_f.empty:
+            st.warning("Tidak ada data pada rentang tanggal ini.")
+        else:
+            if gran == "Harian":
+                df_f["period"] = df_f["date"].dt.date
+            elif gran == "Mingguan":
+                df_f["period"] = df_f["date"].dt.to_period("W").apply(
+                    lambda p: p.start_time.date() if hasattr(p, "start_time") else None)
+            else:
+                df_f["period"] = df_f["date"].dt.to_period("M").apply(
+                    lambda p: p.start_time.date() if hasattr(p, "start_time") else None)
+
+            trend = (df_f.groupby(["period","sentiment"])
+                         .size().reset_index(name="count"))
+            trend["period"] = pd.to_datetime(trend["period"])
+            trend_wide = trend.pivot_table(
+                index="period", columns="sentiment", values="count", fill_value=0
+            ).reset_index().sort_values("period")
+            for lbl in VALID_LABELS:
+                if lbl not in trend_wide.columns:
+                    trend_wide[lbl] = 0
+
+            # KPI
+            tk1,tk2,tk3,tk4 = st.columns(4)
+            tk1.metric("Komentar",    f"{len(df_f):,}")
+            tk2.metric("Negatif",     f"{int(trend_wide['negatif'].sum()):,}")
+            tk3.metric("Positif",     f"{int(trend_wide['positif'].sum()):,}")
+            pct_neg = int(trend_wide['negatif'].sum()) / max(len(df_f),1) * 100
+            tk4.metric("% Negatif",   f"{pct_neg:.1f}%")
+            st.divider()
+
+            # ── Grafik garis Positif vs Negatif ──────────────────────────────
+            st.markdown("#### Tren Komentar Positif vs Negatif")
+            fig_line = go.Figure()
+            fig_line.add_trace(go.Scatter(
+                x=trend_wide["period"], y=trend_wide["negatif"],
+                mode="lines+markers", name="Negatif",
+                line=dict(color=LABEL_COLORS["negatif"], width=2.5),
+                marker=dict(size=5), fill="tozeroy",
+                fillcolor="rgba(220,38,38,0.10)",
+            ))
+            fig_line.add_trace(go.Scatter(
+                x=trend_wide["period"], y=trend_wide["positif"],
+                mode="lines+markers", name="Positif",
+                line=dict(color=LABEL_COLORS["positif"], width=2.5),
+                marker=dict(size=5), fill="tozeroy",
+                fillcolor="rgba(22,163,74,0.10)",
+            ))
+
+            y_max = max(trend_wide["negatif"].max(), trend_wide["positif"].max(), 1)
+            # Anotasi puncak
+            peak_neg = trend_wide.loc[trend_wide["negatif"].idxmax()]
+            peak_pos = trend_wide.loc[trend_wide["positif"].idxmax()]
+            fig_line.add_annotation(
+                x=peak_neg["period"], y=peak_neg["negatif"],
+                text=f"Puncak Negatif<br>{int(peak_neg['negatif']):,}",
+                showarrow=True, arrowhead=2,
+                arrowcolor=LABEL_COLORS["negatif"],
+                font=dict(color=LABEL_COLORS["negatif"], size=11),
+                bgcolor="white", bordercolor=LABEL_COLORS["negatif"], ax=0, ay=-50,
+            )
+            if peak_pos["positif"] > 0:
+                fig_line.add_annotation(
+                    x=peak_pos["period"], y=peak_pos["positif"],
+                    text=f"Puncak Positif<br>{int(peak_pos['positif']):,}",
+                    showarrow=True, arrowhead=2,
+                    arrowcolor=LABEL_COLORS["positif"],
+                    font=dict(color=LABEL_COLORS["positif"], size=11),
+                    bgcolor="white", bordercolor=LABEL_COLORS["positif"], ax=0, ay=-50,
+                )
+
+            fig_line.update_layout(
+                title=f"Tren Sentimen Positif vs Negatif ({gran})",
+                xaxis_title="Tanggal", yaxis_title="Jumlah Komentar",
+                yaxis=dict(range=[0, y_max * 1.28],
+                           dtick=max(1, int(y_max / 8))),
+                height=480, margin=dict(t=55,b=15),
+                legend=dict(orientation="h", y=1.06),
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+
+            # Analisis lonjakan
+            st.markdown("##### Analisis Lonjakan")
+            df_peak_neg = df_f[(df_f["sentiment"]=="negatif") &
+                                (df_f["period"]==peak_neg["period"].date())]
+            df_peak_pos = df_f[(df_f["sentiment"]=="positif") &
+                                (df_f["period"]==peak_pos["period"].date())]
+            top_n_w, _ = get_token_freq(df_peak_neg, None, 6) \
+                if not df_peak_neg.empty else (pd.DataFrame(), 0)
+            top_p_w, _ = get_token_freq(df_peak_pos, None, 6) \
+                if not df_peak_pos.empty else (pd.DataFrame(), 0)
+            an1, an2 = st.columns(2)
+            with an1:
+                kw = ", ".join(top_n_w["kata"].head(5).tolist()) if not top_n_w.empty else "-"
+                st.error(
+                    f"**Puncak Negatif** — {peak_neg['period'].strftime('%d %b %Y')}\n\n"
+                    f"Jumlah: **{int(peak_neg['negatif']):,}** komentar\n\n"
+                    f"Kata kunci: `{kw}`\n\n"
+                    f"Kemungkinan penyebab: lonjakan reaksi publik terhadap isu pada tanggal tersebut."
+                )
+            with an2:
+                kw2 = ", ".join(top_p_w["kata"].head(5).tolist()) if not top_p_w.empty else "-"
+                st.success(
+                    f"**Puncak Positif** — {peak_pos['period'].strftime('%d %b %Y')}\n\n"
+                    f"Jumlah: **{int(peak_pos['positif']):,}** komentar\n\n"
+                    f"Kata kunci: `{kw2}`"
+                )
+
+            st.divider()
+
+            # ── Area stacked ──────────────────────────────────────────────────
+            st.markdown("#### Volume Komentar Semua Sentimen")
+            fig_area = go.Figure()
+            for lbl, fc in [("negatif","rgba(220,38,38,0.55)"),
+                             ("netral", "rgba(37,99,235,0.45)"),
+                             ("positif","rgba(22,163,74,0.50)")]:
+                fig_area.add_trace(go.Scatter(
+                    x=trend_wide["period"], y=trend_wide[lbl],
+                    mode="lines", name=lbl.capitalize(),
+                    line=dict(color=LABEL_COLORS[lbl], width=1.5),
+                    stackgroup="one", fillcolor=fc,
+                ))
+            fig_area.update_layout(title=f"Volume Komentar Stacked ({gran})",
+                                    xaxis_title="Tanggal", yaxis_title="Jumlah Komentar",
+                                    height=420, margin=dict(t=55,b=15),
+                                    legend=dict(orientation="h", y=1.06))
+            st.plotly_chart(fig_area, use_container_width=True)
+            st.divider()
+
+            # ── Rasio negatif ─────────────────────────────────────────────────
+            st.markdown("#### Rasio Sentimen Negatif per Periode")
+            trend_wide["total"]     = trend_wide[VALID_LABELS].sum(axis=1)
+            trend_wide["rasio_neg"] = (
+                trend_wide["negatif"] / trend_wide["total"].replace(0,np.nan) * 100
+            ).round(1).fillna(0)
+            threshold = 60.0
+            fig_ratio = go.Figure(go.Bar(
+                x=trend_wide["period"], y=trend_wide["rasio_neg"],
+                marker_color=[LABEL_COLORS["negatif"] if v >= threshold else "#94A3B8"
+                              for v in trend_wide["rasio_neg"]],
+            ))
+            fig_ratio.add_hline(y=threshold, line_dash="dash", line_color="#D97706",
+                                annotation_text=f"Ambang kritis {threshold:.0f}%",
+                                annotation_position="top right")
+            fig_ratio.update_layout(
+                title=f"Rasio Sentimen Negatif ({gran}) — merah di atas {threshold:.0f}%",
+                xaxis_title="Tanggal", yaxis_title="% Negatif",
+                yaxis=dict(range=[0,105]),
+                height=380, margin=dict(t=55,b=15))
+            st.plotly_chart(fig_ratio, use_container_width=True)
+            st.divider()
+
+            # ── Tabel ─────────────────────────────────────────────────────────
+            st.markdown("#### Tabel Data Tren")
+            disp_t = trend_wide.copy()
+            disp_t["period"] = disp_t["period"].dt.strftime("%d %b %Y")
+            disp_t = disp_t.rename(columns={
+                "period":"Periode","positif":"Positif","netral":"Netral",
+                "negatif":"Negatif","total":"Total","rasio_neg":"% Negatif"})
+            st.dataframe(
+                disp_t[["Periode","Positif","Netral","Negatif","Total","% Negatif"]]
+                    .sort_values("Periode", ascending=False)
+                    .style.background_gradient(subset=["% Negatif"], cmap="Reds"),
+                use_container_width=True, hide_index=True, height=350,
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — FREKUENSI KATA
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab3:
+    st.subheader("Frekuensi Kata Bermakna")
+    st.caption("Kata sambung, kata hubung, dan kata tidak bermakna telah dihapus.")
+
+    c_sel, c_info = st.columns([2,3])
+    with c_sel:
+        sel_lbl = st.selectbox("Sentimen:", ["Semua"]+VALID_LABELS, key="t3_lbl")
+    lbl_key = None if sel_lbl == "Semua" else sel_lbl
+    freq_df, total_tok = get_token_freq(df, lbl_key, top_n_words)
+
+    if not freq_df.empty:
+        bar_c = LABEL_COLORS.get(lbl_key, "#2563EB") if lbl_key else "#2563EB"
+
+        # Bar vertikal frekuensi
+        fig = go.Figure(go.Bar(
+            x=freq_df["kata"], y=freq_df["frekuensi"],
+            marker_color=bar_c,
+            text=freq_df["frekuensi"], textposition="outside",
+            customdata=freq_df["persen"].values,
+            hovertemplate="<b>%{x}</b><br>Frekuensi: %{y:,}<br>%{customdata:.2f}%<extra></extra>",
+        ))
+        fig.update_layout(title=f"Top {top_n_words} Kata — {sel_lbl}",
+                          xaxis_tickangle=-35, yaxis_title="Frekuensi",
+                          yaxis=dict(range=[0, freq_df["frekuensi"].max()*1.22]),
+                          height=450, margin=dict(t=55,b=85))
+        st.plotly_chart(fig, use_container_width=True)
         st.divider()
 
-        # N-gram per label side by side
-        st.markdown(f"#### 🔍 Perbandingan {sel_n[0]} per Sentimen")
-        cols_ng = st.columns(3)
-        for i, lbl_ng in enumerate(VALID_LABELS):
-            ng_sub, _ = get_ngram_freq(df, lbl_ng, n_val, remove_stop, 10)
-            with cols_ng[i]:
-                if not ng_sub.empty:
-                    fig = go.Figure(go.Bar(
-                        y=ng_sub["ngram"][::-1],
-                        x=ng_sub["frekuensi"][::-1],
+        # Horizontal bar dengan persentase
+        fig2 = go.Figure(go.Bar(
+            y=freq_df["kata"][::-1], x=freq_df["persen"][::-1],
+            orientation="h",
+            marker=dict(color=freq_df["persen"][::-1],
+                        colorscale=[[0,"#DBEAFE"],[1,"#1D4ED8"]], showscale=True,
+                        colorbar=dict(title="%")),
+            text=freq_df["persen"].apply(lambda v: f"{v:.2f}%")[::-1],
+            textposition="outside",
+        ))
+        fig2.update_layout(title=f"Persentase Kata dari Total Token — {sel_lbl}",
+                           xaxis_title="Persentase (%)",
+                           height=max(380, top_n_words*22),
+                           margin=dict(t=55,b=15,l=110))
+        st.plotly_chart(fig2, use_container_width=True)
+        st.divider()
+
+        # Perbandingan kata per sentimen
+        st.markdown("#### Perbandingan Kata Menonjol per Sentimen")
+        cols3 = st.columns(3)
+        for i, lbl in enumerate(VALID_LABELS):
+            f, _ = get_token_freq(df, lbl, 12)
+            with cols3[i]:
+                if not f.empty:
+                    fig_s = go.Figure(go.Bar(
+                        y=f["kata"][::-1], x=f["frekuensi"][::-1],
                         orientation="h",
-                        marker_color=LABEL_COLORS[lbl_ng],
-                        text=ng_sub["frekuensi"][::-1],
+                        marker_color=LABEL_COLORS[lbl],
+                        text=f["persen"].apply(lambda v: f"{v:.1f}%")[::-1],
                         textposition="outside",
                     ))
-                    fig.update_layout(
-                        title=f"{lbl_ng.capitalize()} — Top 10",
-                        height=380, margin=dict(t=50,b=10,l=130),
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig_s.update_layout(title=f"{lbl.capitalize()}",
+                                        height=420, margin=dict(t=50,b=10,l=100))
+                    st.plotly_chart(fig_s, use_container_width=True)
+        st.divider()
+
+        # Kata eksklusif per sentimen (dominance score)
+        st.markdown("#### Kata Khas per Sentimen")
+        st.caption("Kata yang proporsinya jauh lebih tinggi di satu sentimen dibanding rata-rata keseluruhan.")
+        all_freq, _ = get_token_freq(df, None, 300)
+        all_dict = all_freq.set_index("kata")["persen"].to_dict()
+        dom_cols = st.columns(3)
+        for i, lbl in enumerate(VALID_LABELS):
+            lbl_freq, _ = get_token_freq(df, lbl, 200)
+            if lbl_freq.empty:
+                continue
+            lbl_dict = lbl_freq.set_index("kata")["persen"].to_dict()
+            dominance = [(w, lbl_dict[w] - all_dict.get(w,0)) for w in lbl_dict]
+            dominance = sorted(dominance, key=lambda x: x[1], reverse=True)[:12]
+            dom_df = pd.DataFrame(dominance, columns=["kata","dominance"])
+            with dom_cols[i]:
+                fig_d = go.Figure(go.Bar(
+                    y=dom_df["kata"][::-1], x=dom_df["dominance"][::-1],
+                    orientation="h", marker_color=LABEL_COLORS[lbl],
+                    text=dom_df["dominance"].apply(lambda v: f"+{v:.2f}%")[::-1],
+                    textposition="outside",
+                ))
+                fig_d.update_layout(title=f"Khas: {lbl.capitalize()}",
+                                    xaxis_title="Dominance (%)",
+                                    height=420, margin=dict(t=50,b=10,l=100))
+                st.plotly_chart(fig_d, use_container_width=True)
 
         st.divider()
 
-        # Tabel n-gram
-        st.markdown(f"#### 📋 Tabel {sel_n[0]}")
-        ng_display = ngram_df.copy()
-        ng_display.columns = [f"{sel_n[0]}", "Frekuensi", "Persentase (%)"]
-        ng_display["Kumulatif (%)"] = ng_display["Persentase (%)"].cumsum().round(3)
+        # Tabel
+        st.markdown("#### Tabel Frekuensi Lengkap")
+        disp = freq_df.copy()
+        disp.columns = ["Kata","Frekuensi","Persentase (%)"]
+        disp["Kumulatif (%)"] = disp["Persentase (%)"].cumsum().round(2)
         st.dataframe(
-            ng_display.style.background_gradient(subset=["Frekuensi"], cmap="Purples")
-                            .format({"Persentase (%)": "{:.3f}%",
-                                     "Kumulatif (%)": "{:.2f}%"}),
+            disp.style.background_gradient(subset=["Frekuensi"], cmap="Blues")
+                      .format({"Persentase (%)":"{:.2f}%","Kumulatif (%)":"{:.2f}%"}),
+            use_container_width=True, hide_index=True, height=380,
+        )
+        st.caption(f"Top 10 kata menyumbang {disp['Persentase (%)'].head(10).sum():.1f}% dari total token.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — N-GRAM & WORD CLOUD
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab4:
+    st.subheader("Analisis N-Gram dan Word Cloud")
+
+    # N-gram
+    ng1, ng2 = st.columns([1,2])
+    with ng1:
+        sel_n_type = st.radio("Tipe:", [("Bigram",2),("Trigram",3)],
+                              format_func=lambda x: x[0], key="ng_type")
+        n_val = sel_n_type[1]
+        sel_ng_lbl = st.selectbox("Sentimen:", ["Semua"]+VALID_LABELS, key="ng_lbl")
+        ng_lbl = None if sel_ng_lbl == "Semua" else sel_ng_lbl
+    with ng2:
+        ng_df, ng_total = get_ngram_freq(df, ng_lbl, n_val, top_n_ngram)
+        if not ng_df.empty:
+            fig_ng = go.Figure(go.Bar(
+                y=ng_df["ngram"][::-1], x=ng_df["frekuensi"][::-1],
+                orientation="h",
+                marker=dict(color=ng_df["persen"][::-1],
+                            colorscale=[[0,"#F3E8FF"],[1,"#7C3AED"]], showscale=True),
+                text=ng_df["persen"].apply(lambda v: f"{v:.2f}%")[::-1],
+                textposition="outside",
+            ))
+            fig_ng.update_layout(
+                title=f"Top {top_n_ngram} {sel_n_type[0]} — {sel_ng_lbl}",
+                xaxis_title="Frekuensi",
+                height=max(400, top_n_ngram*28),
+                margin=dict(t=55,b=15,l=160),
+            )
+            st.plotly_chart(fig_ng, use_container_width=True)
+
+    st.divider()
+
+    # N-gram per sentimen side by side
+    st.markdown(f"#### Perbandingan {sel_n_type[0]} per Sentimen")
+    ng_cols = st.columns(3)
+    for i, lbl in enumerate(VALID_LABELS):
+        ng_s, _ = get_ngram_freq(df, lbl, n_val, 10)
+        with ng_cols[i]:
+            if not ng_s.empty:
+                fig_ns = go.Figure(go.Bar(
+                    y=ng_s["ngram"][::-1], x=ng_s["frekuensi"][::-1],
+                    orientation="h", marker_color=LABEL_COLORS[lbl],
+                    text=ng_s["frekuensi"][::-1], textposition="outside",
+                ))
+                fig_ns.update_layout(title=f"{lbl.capitalize()}",
+                                     height=380, margin=dict(t=50,b=10,l=140))
+                st.plotly_chart(fig_ns, use_container_width=True)
+
+    st.divider()
+
+    # Word cloud
+    st.markdown("#### Word Cloud per Sentimen")
+    wc_subtabs = st.tabs(["Positif","Netral","Negatif","Semua Label"])
+    wc_cfg = [("positif","Positif","#F0FDF4"),("netral","Netral","#EFF6FF"),
+              ("negatif","Negatif","#FFF1F2"),(None,"Semua Label","#F8FAFC")]
+    for wc_tab, (lbl,name,bg) in zip(wc_subtabs, wc_cfg):
+        with wc_tab:
+            n_docs = len(df) if lbl is None else int((df["sentiment"]==lbl).sum())
+            st.caption(f"{name} — {n_docs:,} komentar")
+            with st.spinner(f"Membuat word cloud {name}..."):
+                img = get_wordcloud_img(df, lbl, bg)
+            st.image(img, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — INSIGHT PER VIDEO
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.subheader("Insight per Video")
+
+    # Distribusi sentimen per video
+    gdf = df.groupby(["video_short","sentiment"]).size().reset_index(name="n")
+    tot_vid = gdf.groupby("video_short")["n"].transform("sum")
+    gdf["pct"] = (gdf["n"] / tot_vid * 100).round(1)
+
+    v1, v2 = st.columns(2)
+    with v1:
+        fig = px.bar(gdf, x="video_short", y="n", color="sentiment",
+                     color_discrete_map=LABEL_COLORS, barmode="stack",
+                     title="Jumlah Komentar per Video",
+                     labels={"video_short":"Video","n":"Jumlah"},
+                     text="n")
+        fig.update_layout(height=450, margin=dict(t=55,b=150), xaxis_tickangle=-25,
+                          legend=dict(orientation="h", y=1.06))
+        st.plotly_chart(fig, use_container_width=True)
+    with v2:
+        # Pie chart per video — satu pie per video menggunakan subplot
+        from plotly.subplots import make_subplots
+
+        video_list = gdf["video_short"].unique().tolist()
+        n_vids = len(video_list)
+        cols_per_row = min(n_vids, 3)
+        n_rows = -(-n_vids // cols_per_row)  # ceiling division
+
+        fig_pie = make_subplots(
+            rows=n_rows, cols=cols_per_row,
+            specs=[[{"type": "pie"}] * cols_per_row for _ in range(n_rows)],
+            subplot_titles=video_list,
+        )
+
+        for idx, vid in enumerate(video_list):
+            row = idx // cols_per_row + 1
+            col = idx % cols_per_row + 1
+            sub = gdf[gdf["video_short"] == vid].sort_values("sentiment")
+            fig_pie.add_trace(
+                go.Pie(
+                    labels=sub["sentiment"],
+                    values=sub["pct"],
+                    marker_colors=[LABEL_COLORS.get(l, "#aaa") for l in sub["sentiment"]],
+                    hole=0.38,
+                    textinfo="percent",
+                    textfont_size=12,
+                    hovertemplate="<b>%{label}</b><br>%{value:.1f}%<extra></extra>",
+                    showlegend=(idx == 0),
+                ),
+                row=row, col=col,
+            )
+
+        fig_pie.update_layout(
+            title="Proporsi Sentimen per Video (%)",
+            height=320 * n_rows,
+            margin=dict(t=60, b=20, l=20, r=20),
+            legend=dict(orientation="h", y=-0.08,
+                        font=dict(size=12, color="#1E293B")),
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    st.divider()
+
+    # Tabel metrik per video
+    st.markdown("#### Metrik Lengkap per Video")
+    vid_stats = []
+    for vid_id, vid_title in VIDEO_TITLES.items():
+        sub = df[df["video_id"] == vid_id]
+        if sub.empty:
+            continue
+        n_tot = len(sub)
+        vid_stats.append({
+            "Judul Video":   vid_title,
+            "Total":         n_tot,
+            "Positif":       int((sub["sentiment"]=="positif").sum()),
+            "Netral":        int((sub["sentiment"]=="netral").sum()),
+            "Negatif":       int((sub["sentiment"]=="negatif").sum()),
+            "% Negatif":     round((sub["sentiment"]=="negatif").sum()/n_tot*100, 1),
+            "% Positif":     round((sub["sentiment"]=="positif").sum()/n_tot*100, 1),
+            "Total Like":    int(sub["like_count"].sum()),
+            "Rata Like":     round(sub["like_count"].mean(), 1),
+        })
+    if vid_stats:
+        vs_df = pd.DataFrame(vid_stats).sort_values("% Negatif", ascending=False)
+        st.dataframe(
+            vs_df.style.background_gradient(subset=["% Negatif"], cmap="Reds")
+                       .background_gradient(subset=["% Positif"], cmap="Greens"),
             use_container_width=True, hide_index=True,
         )
 
-
-# ─────────────────────────────────────────────────────────────────────────
-# TAB 6 — PERBANDINGAN LINTAS LABEL
-# ─────────────────────────────────────────────────────────────────────────
-with tab6:
-    st.subheader("📊 Perbandingan Kata Lintas Sentimen")
-
-    cross_df = get_cross_label_freq(df, remove_stop, top_n_words)
-
-    # ── Heatmap frekuensi kata per label ──────────────────────────────────
-    st.markdown("#### 🔥 Heatmap Frekuensi Kata per Sentimen")
-
-    # Ambil kata yang muncul di minimal 2 label
-    pivot = cross_df.pivot_table(
-        index="kata", columns="sentimen", values="persen", fill_value=0
-    )
-    # Filter kata yang ada di semua label dan total persen tinggi
-    pivot["total"] = pivot.sum(axis=1)
-    pivot = pivot.sort_values("total", ascending=False).head(30).drop(columns="total")
-    pivot = pivot.sort_values(by=list(pivot.columns), ascending=False)
-
-    fig_heat = go.Figure(go.Heatmap(
-        z=pivot.values,
-        x=pivot.columns.tolist(),
-        y=pivot.index.tolist(),
-        colorscale="YlOrRd",
-        text=[[f"{v:.3f}%" for v in row] for row in pivot.values],
-        texttemplate="%{text}",
-        hovertemplate="Kata: <b>%{y}</b><br>Sentimen: <b>%{x}</b><br>%{z:.4f}%<extra></extra>",
-        showscale=True,
-        colorbar=dict(title="% Token"),
-    ))
-    fig_heat.update_layout(
-        title="Heatmap % Kemunculan Kata per Sentimen (Top 30 kata)",
-        xaxis_title="Sentimen",
-        height=700, margin=dict(t=60, b=20, l=120),
-    )
-    st.plotly_chart(fig_heat, use_container_width=True)
-
     st.divider()
 
-    # ── Kata eksklusif / unik per sentimen ────────────────────────────────
-    st.markdown("#### 🎯 Kata yang Menonjol di Masing-masing Sentimen")
-    st.caption("Kata yang persentasenya jauh lebih tinggi di satu sentimen dibanding lainnya.")
-
-    cols_excl = st.columns(3)
-    for i, lbl in enumerate(VALID_LABELS):
-        other_lbls = [l for l in VALID_LABELS if l != lbl]
-        lbl_freq, _ = get_token_freq(df, lbl, remove_stop, 200)
-        oth_freq, _ = get_token_freq(df, None, remove_stop, 200)
-        if lbl_freq.empty:
-            continue
-        # Dominance score: persen di label ini - persen di semua label
-        merged = lbl_freq.set_index("kata")[["persentase"]].rename(
-            columns={"persentase": "pct_label"}
-        ).join(
-            oth_freq.set_index("kata")[["persentase"]].rename(
-                columns={"persentase": "pct_all"}
-            ), how="left"
-        ).fillna(0)
-        merged["dominance"] = merged["pct_label"] - merged["pct_all"]
-        top_excl = merged.sort_values("dominance", ascending=False).head(15)
-
-        with cols_excl[i]:
-            fig_excl = go.Figure(go.Bar(
-                y=top_excl.index[::-1],
-                x=top_excl["dominance"][::-1],
-                orientation="h",
-                marker_color=LABEL_COLORS[lbl],
-                text=top_excl["dominance"][::-1].apply(lambda v: f"+{v:.3f}%"),
-                textposition="outside",
-                hovertemplate="<b>%{y}</b><br>Dominance: +%{x:.4f}%<extra></extra>",
-            ))
-            fig_excl.update_layout(
-                title=f"😊 {lbl.capitalize()}" if lbl == "positif"
-                      else f"😐 {lbl.capitalize()}" if lbl == "netral"
-                      else f"😠 {lbl.capitalize()}",
-                xaxis_title="Dominance Score (%)",
-                height=460, margin=dict(t=50,b=10,l=100),
-            )
-            st.plotly_chart(fig_excl, use_container_width=True)
-
-    st.divider()
-
-    # ── Stacked bar frekuensi absolut top kata per label ──────────────────
-    st.markdown("#### 📊 Perbandingan Frekuensi Kata Antar Sentimen")
-    top_words_global, _ = get_token_freq(df, None, remove_stop, 20)
-    if not top_words_global.empty:
-        top_words_list = top_words_global["kata"].tolist()
-        records_comp = []
-        for lbl in VALID_LABELS:
-            lbl_freq_full, lbl_total = get_token_freq(df, lbl, remove_stop, 200)
-            lbl_dict = lbl_freq_full.set_index("kata")["persentase"].to_dict()
-            for w in top_words_list:
-                records_comp.append({
-                    "kata": w, "sentimen": lbl,
-                    "persentase": lbl_dict.get(w, 0),
-                })
-        comp_df = pd.DataFrame(records_comp)
-        fig_comp = px.bar(
-            comp_df, x="kata", y="persentase", color="sentimen",
-            color_discrete_map=LABEL_COLORS, barmode="group",
-            text=comp_df["persentase"].apply(lambda v: f"{v:.2f}%"),
-            title="Persentase Kemunculan Top 20 Kata per Sentimen",
-            labels={"kata":"Kata","persentase":"Persentase (%)","sentimen":"Sentimen"},
-        )
-        fig_comp.update_traces(textposition="outside")
-        fig_comp.update_layout(
-            xaxis_tickangle=-35,
-            yaxis_title="% dari Token Label",
-            height=480, margin=dict(t=60,b=100),
-            legend=dict(orientation="h", y=1.08),
-        )
-        st.plotly_chart(fig_comp, use_container_width=True)
-
-    st.divider()
-
-    # ── Treemap komposisi kata ─────────────────────────────────────────────
-    st.markdown("#### 🌳 Treemap Kata Dominan per Sentimen")
-    treemap_records = []
-    for lbl in VALID_LABELS:
-        freq_tm, total_tm = get_token_freq(df, lbl, remove_stop, 20)
-        for _, row in freq_tm.iterrows():
-            treemap_records.append({
-                "sentimen": lbl, "kata": row["kata"],
-                "frekuensi": row["frekuensi"],
-                "label_kata": f"{row['kata']} ({row['frekuensi']:,})",
-            })
-    if treemap_records:
-        tm_df = pd.DataFrame(treemap_records)
-        fig_tm = px.treemap(
-            tm_df, path=["sentimen","kata"],
-            values="frekuensi",
-            color="sentimen", color_discrete_map=LABEL_COLORS,
-            title=f"Treemap Top {top_n_words} Kata per Sentimen (luas = frekuensi)",
-            hover_data={"frekuensi": True},
-        )
-        fig_tm.update_traces(textinfo="label+value")
-        fig_tm.update_layout(height=550, margin=dict(t=60,b=10))
-        st.plotly_chart(fig_tm, use_container_width=True)
-
-
-# ── Footer ───────────────────────────────────────────────────────────────────
-st.divider()
-st.caption(
-    f"📊 EDA Dashboard — Analisis Sentimen Komentar YouTube  |  "
-    f"DB: `{MONGO_DB}` · Collection: `{SOURCE_COL}`  |  "
-    f"Total: {total:,} komentar · Vocab: {vocab_size:,} kata unik"
-)
+    # Kata khas per video (top 10 kata bermakna)
+    st.markdown("#### Kata Paling Sering per Video")
+    vid_ids = df["video_id"].unique().tolist()
+    n_vids = len(vid_ids)
+    vid_cols = st.columns(min(n_vids, 3))
+    for i, vid_id in enumerate(vid_ids[:6]):
+        sub_vid = df[df["video_id"]==vid_id]
+        vf, _ = get_token_freq(sub_vid, None, 10)
+        title_short = VIDEO_TITLES.get(vid_id, vid_id)[:35]
+        with vid_cols[i % 3]:
+            if not vf.empty:
+                fig_v = go.Figure(go.Bar(
+                    y=vf["kata"][::-1], x=vf["frekuensi"][::-1],
+                    orientation="h",
+                    marker=dict(color=vf["frekuensi"][::-1],
+                                colorscale=[[0,"#E0F2FE"],[1,"#0284C7"]], showscale=False),
+                    text=vf["persen"].apply(lambda v: f"{v:.1f}%")[::-1],
+                    textposition="outside",
+                ))
+                fig_v.update_layout(title=title_short,
+                                    height=360, margin=dict(t=50,b=10,l=100))
+                st.plotly_chart(fig_v, use_container_width=True)
