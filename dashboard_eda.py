@@ -36,8 +36,8 @@ hr{border-color:#E2E8F0}
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
 MONGO_URI    = os.getenv("MONGO_URI", "")
 MONGO_DB     = os.getenv("MONGO_DB", "analisis_sentimen")
-SOURCE_COL   = "comments_sentiment"       # 2000 data manual
-FULL_COL     = "full_comments_sentiment"  # 13446 data gabungan (manual + auto)
+SOURCE_COL   = "comments_sentiment"       # data manual
+AUTO_COL     = "phase2_auto_labeled"      # data auto-labeled
 COMMENTS_COL = "comments"
 VALID_LABELS = ["positif", "netral", "negatif"]
 LABEL_COLORS = {"positif": "#16A34A", "netral": "#2563EB", "negatif": "#DC2626"}
@@ -128,7 +128,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
             if str(t).split() else 0)
         return df
 
-    # ── Load data manual (2000) ───────────────────────────────────────────────
+    # ── Load data manual dari comments_sentiment ─────────────────────────────
     docs_manual = list(get_client()[MONGO_DB][SOURCE_COL].find(
         {"text_final": {"$exists": True, "$ne": ""},
          "sentiment":  {"$exists": True, "$nin": [None, ""]}},
@@ -138,22 +138,28 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     df_manual = pd.DataFrame(docs_manual)
     if not df_manual.empty:
         df_manual = _enrich(df_manual)
-        df_manual["data_source"] = "Manual (2.000)"
+        df_manual["data_source"] = "Manual"
 
-    # ── Load data full gabungan (13446) ───────────────────────────────────────
-    docs_full = list(get_client()[MONGO_DB][FULL_COL].find(
+    # ── Load data auto-label dari phase2_auto_labeled ─────────────────────────
+    docs_auto = list(get_client()[MONGO_DB][AUTO_COL].find(
         {"text_final": {"$exists": True, "$ne": ""},
          "sentiment":  {"$exists": True, "$nin": [None, ""]}},
-        {"_id": 0, "comment_id": 1, "text_final": 1, "sentiment": 1},
+        {"_id": 0, "comment_id": 1, "video_id": 1,
+         "text_final": 1, "sentiment": 1, "text_original": 1},
     ))
-    df_full = pd.DataFrame(docs_full)
-    if not df_full.empty:
-        df_full = _enrich(df_full)
-        # Tandai asal data
-        manual_ids = set(df_manual["comment_id"].tolist()) if not df_manual.empty else set()
-        df_full["data_source"] = df_full["comment_id"].apply(
-            lambda cid: "Manual (2.000)" if cid in manual_ids else "Auto-label (11.446)"
-        )
+    df_auto = pd.DataFrame(docs_auto)
+    if not df_auto.empty:
+        df_auto = _enrich(df_auto)
+        df_auto["data_source"] = "Auto-label"
+
+    # ── Gabungkan keduanya ────────────────────────────────────────────────────
+    frames = [f for f in [df_manual, df_auto] if not f.empty]
+    if frames:
+        df_full = pd.concat(frames, ignore_index=True).drop_duplicates(
+            subset=["comment_id"], keep="first")
+        df_full["data_source"] = df_full["data_source"].fillna("Auto-label")
+    else:
+        df_full = pd.DataFrame()
 
     return df_manual, df_full
 
@@ -233,7 +239,7 @@ if df.empty:
 # df digunakan untuk semua tab kecuali distribusi (yang pakai keduanya)
 total     = len(df)
 total_m   = len(df_manual)
-total_a   = total - total_m
+total_a   = int((df["data_source"] == "Auto-label").sum())
 n_pos     = int((df["sentiment"]=="positif").sum())
 n_net     = int((df["sentiment"]=="netral").sum())
 n_neg     = int((df["sentiment"]=="negatif").sum())
@@ -332,6 +338,10 @@ with tab1:
             xaxis=dict(title="Persentase (%)", range=[0,80]),
             height=260, margin=dict(t=50,b=20,l=80))
         st.plotly_chart(fig_lo, use_container_width=True)
+        st.caption(
+            "Grafik lollipop menunjukkan seberapa jauh distribusi dari kondisi seimbang (33% per kelas). "
+            "Titik yang jauh ke kanan berarti sentimen itu mendominasi data."
+        )
 
         # Info
         ci1, ci2 = st.columns(2)
@@ -345,8 +355,8 @@ with tab1:
     with dist_tab1:
         _dist_charts(df_manual, "Manual Label")
     with dist_tab2:
-        df_auto = df[df["data_source"] == "Auto-label (11.446)"]
-        _dist_charts(df_auto, "Auto Label")
+        df_auto_tab = df[df["data_source"] == "Auto-label"]
+        _dist_charts(df_auto_tab, "Auto Label")
     with dist_tab3:
         _dist_charts(df, "Gabungan")
 
@@ -356,9 +366,9 @@ with tab1:
     st.markdown("#### Perbandingan Distribusi: Manual vs Auto vs Gabungan")
     comp_records = []
     for src_label, ddf in [
-        ("Manual (2.000)", df_manual),
-        ("Auto (11.446)",  df[df["data_source"]=="Auto-label (11.446)"]),
-        ("Gabungan (13.446)", df),
+        ("Manual", df_manual),
+        ("Auto-label",  df[df["data_source"]=="Auto-label"]),
+        ("Gabungan", df),
     ]:
         tot = len(ddf)
         for lbl in VALID_LABELS:
@@ -412,6 +422,28 @@ with tab1:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — TREN WAKTU
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(show_spinner=False)
+def get_spike_wordcloud_img(df_spike, label, bg, title_text):
+    """Buat word cloud dari komentar di periode lonjakan."""
+    subset = df_spike if label is None else df_spike[df_spike["sentiment"] == label]
+    text = " ".join(
+        w for txt in subset["text_final"]
+        for w in str(txt).split()
+        if w not in STOPWORDS and len(w) > 2 and w.isalpha()
+    )
+    if not text.strip():
+        text = "tidak ada data"
+    cmap = ("Reds" if label == "negatif" else "Greens" if label == "positif"
+            else "Blues" if label == "netral" else "plasma")
+    wc = WordCloud(width=700, height=320, background_color=bg,
+                   colormap=cmap, max_words=80, collocations=False,
+                   random_state=SEED).generate(text)
+    buf = io.BytesIO()
+    wc.to_image().save(buf, format="PNG")
+    return buf.getvalue()
+
+
 with tab2:
     st.subheader("Tren Sentimen Berdasarkan Waktu")
 
@@ -438,7 +470,7 @@ with tab2:
         # ── Filter & granularitas ─────────────────────────────────────────────
         col_f1, col_f2, col_f3 = st.columns([2,2,2])
         with col_f1:
-            gran = st.radio("Granularitas:", ["Harian","Mingguan","Bulanan"],
+            gran = st.radio("Granularitas:", ["Harian","Mingguan"],
                             horizontal=True, key="gran")
         with col_f2:
             filter_start = st.date_input("Dari tanggal:", value=default_start,
@@ -457,11 +489,8 @@ with tab2:
         else:
             if gran == "Harian":
                 df_f["period"] = df_f["date"].dt.date
-            elif gran == "Mingguan":
-                df_f["period"] = df_f["date"].dt.to_period("W").apply(
-                    lambda p: p.start_time.date() if hasattr(p, "start_time") else None)
             else:
-                df_f["period"] = df_f["date"].dt.to_period("M").apply(
+                df_f["period"] = df_f["date"].dt.to_period("W").apply(
                     lambda p: p.start_time.date() if hasattr(p, "start_time") else None)
 
             trend = (df_f.groupby(["period","sentiment"])
@@ -502,7 +531,6 @@ with tab2:
             ))
 
             y_max = max(trend_wide["negatif"].max(), trend_wide["positif"].max(), 1)
-            # Anotasi puncak
             peak_neg = trend_wide.loc[trend_wide["negatif"].idxmax()]
             peak_pos = trend_wide.loc[trend_wide["positif"].idxmax()]
             fig_line.add_annotation(
@@ -532,9 +560,13 @@ with tab2:
                 legend=dict(orientation="h", y=1.06),
             )
             st.plotly_chart(fig_line, use_container_width=True)
+            st.caption(
+                "Grafik ini memperlihatkan bagaimana jumlah komentar negatif dan positif berubah dari waktu ke waktu. "
+                "Lonjakan tajam biasanya muncul ketika ada berita atau peristiwa besar yang ramai dibahas."
+            )
 
-            # Analisis lonjakan
-            st.markdown("##### Analisis Lonjakan")
+            # ── Analisis lonjakan dengan word cloud ───────────────────────────
+            st.markdown("##### Analisis Lonjakan — Kata Kunci & Word Cloud")
             df_peak_neg = df_f[(df_f["sentiment"]=="negatif") &
                                 (df_f["period"]==peak_neg["period"].date())]
             df_peak_pos = df_f[(df_f["sentiment"]=="positif") &
@@ -552,6 +584,15 @@ with tab2:
                     f"Kata kunci: `{kw}`\n\n"
                     f"Kemungkinan penyebab: lonjakan reaksi publik terhadap isu pada tanggal tersebut."
                 )
+                if not df_peak_neg.empty:
+                    with st.spinner("Membuat word cloud puncak negatif..."):
+                        wc_neg_spike = get_spike_wordcloud_img(
+                            df_peak_neg, "negatif", "#FFF1F2", "Puncak Negatif")
+                    st.image(wc_neg_spike, use_container_width=True)
+                    st.caption(
+                        "Kata-kata yang paling banyak muncul di komentar negatif pada hari puncak. "
+                        "Semakin besar hurufnya, semakin sering kata itu dipakai."
+                    )
             with an2:
                 kw2 = ", ".join(top_p_w["kata"].head(5).tolist()) if not top_p_w.empty else "-"
                 st.success(
@@ -559,11 +600,152 @@ with tab2:
                     f"Jumlah: **{int(peak_pos['positif']):,}** komentar\n\n"
                     f"Kata kunci: `{kw2}`"
                 )
+                if not df_peak_pos.empty:
+                    with st.spinner("Membuat word cloud puncak positif..."):
+                        wc_pos_spike = get_spike_wordcloud_img(
+                            df_peak_pos, "positif", "#F0FDF4", "Puncak Positif")
+                    st.image(wc_pos_spike, use_container_width=True)
+                    st.caption(
+                        "Kata-kata yang paling banyak muncul di komentar positif pada hari puncak."
+                    )
+            st.divider()
+
+            # ── Tren Per Bulan (dedicated) ────────────────────────────────────
+            st.markdown("#### Tren Komentar Per Bulan")
+            df_full_dated = df_dated.copy()
+            df_full_dated["bulan"] = df_full_dated["date"].dt.to_period("M").apply(
+                lambda p: p.start_time.date() if hasattr(p, "start_time") else None)
+            trend_monthly = (df_full_dated.groupby(["bulan","sentiment"])
+                             .size().reset_index(name="count"))
+            trend_monthly["bulan"] = pd.to_datetime(trend_monthly["bulan"])
+            trend_monthly_wide = trend_monthly.pivot_table(
+                index="bulan", columns="sentiment", values="count", fill_value=0
+            ).reset_index().sort_values("bulan")
+            for lbl in VALID_LABELS:
+                if lbl not in trend_monthly_wide.columns:
+                    trend_monthly_wide[lbl] = 0
+            trend_monthly_wide["total"] = trend_monthly_wide[VALID_LABELS].sum(axis=1)
+            trend_monthly_wide["label_bulan"] = trend_monthly_wide["bulan"].dt.strftime("%b %Y")
+
+            # Grafik batang per bulan — jumlah absolut
+            fig_monthly_bar = go.Figure()
+            for lbl in ["positif","netral","negatif"]:
+                fig_monthly_bar.add_trace(go.Bar(
+                    x=trend_monthly_wide["label_bulan"],
+                    y=trend_monthly_wide[lbl],
+                    name=lbl.capitalize(),
+                    marker_color=LABEL_COLORS[lbl],
+                    text=trend_monthly_wide[lbl],
+                    textposition="inside",
+                    textfont=dict(size=10),
+                ))
+            fig_monthly_bar.update_layout(
+                title="Jumlah Komentar per Bulan (Semua Sentimen)",
+                barmode="stack",
+                xaxis_title="Bulan",
+                yaxis_title="Jumlah Komentar",
+                height=420,
+                margin=dict(t=55, b=15),
+                legend=dict(orientation="h", y=1.06),
+            )
+            st.plotly_chart(fig_monthly_bar, use_container_width=True)
+            st.caption(
+                "Grafik batang ini menampilkan total komentar tiap bulan, dipisah berdasarkan sentimen. "
+                "Bulan dengan bagian merah tinggi menandakan banyak komentar bernada negatif pada periode itu."
+            )
+
+            # Grafik garis per bulan — semua sentimen
+            fig_monthly_line = go.Figure()
+            for lbl, fc in [
+                ("negatif","rgba(220,38,38,0.15)"),
+                ("netral","rgba(37,99,235,0.12)"),
+                ("positif","rgba(22,163,74,0.12)"),
+            ]:
+                fig_monthly_line.add_trace(go.Scatter(
+                    x=trend_monthly_wide["label_bulan"],
+                    y=trend_monthly_wide[lbl],
+                    mode="lines+markers",
+                    name=lbl.capitalize(),
+                    line=dict(color=LABEL_COLORS[lbl], width=2.5),
+                    marker=dict(size=8),
+                    fill="tozeroy",
+                    fillcolor=fc,
+                ))
+            if not trend_monthly_wide.empty:
+                peak_m_neg_idx = trend_monthly_wide["negatif"].idxmax()
+                peak_m_neg = trend_monthly_wide.loc[peak_m_neg_idx]
+                fig_monthly_line.add_annotation(
+                    x=peak_m_neg["label_bulan"],
+                    y=peak_m_neg["negatif"],
+                    text=f"Puncak Negatif<br>{int(peak_m_neg['negatif']):,}",
+                    showarrow=True, arrowhead=2,
+                    arrowcolor=LABEL_COLORS["negatif"],
+                    font=dict(color=LABEL_COLORS["negatif"], size=11),
+                    bgcolor="white", bordercolor=LABEL_COLORS["negatif"], ax=0, ay=-55,
+                )
+            fig_monthly_line.update_layout(
+                title="Tren Sentimen per Bulan (Garis)",
+                xaxis_title="Bulan",
+                yaxis_title="Jumlah Komentar",
+                height=420,
+                margin=dict(t=55, b=15),
+                legend=dict(orientation="h", y=1.06),
+            )
+            st.plotly_chart(fig_monthly_line, use_container_width=True)
+            st.caption(
+                "Grafik garis memudahkan melihat arah naik-turun sentimen dari bulan ke bulan. "
+                "Titik merah yang melonjak tajam menandakan bulan dengan puncak komentar negatif terbanyak."
+            )
+
+            # Word cloud bulan puncak negatif
+            if not trend_monthly_wide.empty:
+                peak_month_label = peak_m_neg["label_bulan"]
+                peak_month_date  = peak_m_neg["bulan"].date()
+                df_peak_month = df_full_dated[
+                    df_full_dated["date"].dt.to_period("M").apply(
+                        lambda p: p.start_time.date() if hasattr(p, "start_time") else None
+                    ) == peak_month_date
+                ]
+                df_peak_month_neg = df_peak_month[df_peak_month["sentiment"]=="negatif"]
+
+                st.markdown(f"##### Word Cloud Penyebab Lonjakan — {peak_month_label}")
+                wc_col1, wc_col2 = st.columns(2)
+                with wc_col1:
+                    if not df_peak_month_neg.empty:
+                        with st.spinner(f"Membuat word cloud {peak_month_label}..."):
+                            wc_month_neg = get_spike_wordcloud_img(
+                                df_peak_month_neg, "negatif", "#FFF1F2", peak_month_label)
+                        st.image(wc_month_neg, use_container_width=True)
+                        top_m_neg, _ = get_token_freq(df_peak_month_neg, None, 5)
+                        kw_m = ", ".join(top_m_neg["kata"].head(5).tolist()) if not top_m_neg.empty else "-"
+                        st.error(
+                            f"**{peak_month_label}** — Bulan komentar negatif terbanyak\n\n"
+                            f"Jumlah negatif: **{int(peak_m_neg['negatif']):,}** komentar\n\n"
+                            f"Kata yang mendominasi: `{kw_m}`"
+                        )
+                        st.caption(
+                            "Word cloud ini menampilkan kata-kata yang paling sering muncul di komentar negatif "
+                            "pada bulan puncak. Kata-kata inilah yang paling mencerminkan apa yang dikeluhkan netizen."
+                        )
+                with wc_col2:
+                    if not df_peak_month.empty:
+                        with st.spinner(f"Membuat word cloud semua sentimen {peak_month_label}..."):
+                            wc_month_all = get_spike_wordcloud_img(
+                                df_peak_month, None, "#F8FAFC", peak_month_label)
+                        st.image(wc_month_all, use_container_width=True)
+                        st.info(
+                            f"**Semua Sentimen — {peak_month_label}**\n\n"
+                            f"Total komentar bulan ini: **{int(peak_m_neg['total']):,}**"
+                        )
+                        st.caption(
+                            "Word cloud semua komentar (tanpa filter sentimen) di bulan yang sama. "
+                            "Berguna untuk melihat topik apa yang paling ramai dibicarakan secara keseluruhan."
+                        )
 
             st.divider()
 
             # ── Area stacked ──────────────────────────────────────────────────
-            st.markdown("#### Volume Komentar Semua Sentimen")
+            st.markdown("#### Volume Komentar Semua Sentimen (Stacked)")
             fig_area = go.Figure()
             for lbl, fc in [("negatif","rgba(220,38,38,0.55)"),
                              ("netral", "rgba(37,99,235,0.45)"),
@@ -579,6 +761,10 @@ with tab2:
                                     height=420, margin=dict(t=55,b=15),
                                     legend=dict(orientation="h", y=1.06))
             st.plotly_chart(fig_area, use_container_width=True)
+            st.caption(
+                "Area stacked menunjukkan proporsi setiap sentimen dalam total komentar. "
+                "Ketika area merah mendominasi, artinya komentar negatif lebih banyak dari yang lain pada periode itu."
+            )
             st.divider()
 
             # ── Rasio negatif ─────────────────────────────────────────────────
@@ -602,6 +788,10 @@ with tab2:
                 yaxis=dict(range=[0,105]),
                 height=380, margin=dict(t=55,b=15))
             st.plotly_chart(fig_ratio, use_container_width=True)
+            st.caption(
+                "Grafik ini menunjukkan berapa persen komentar yang bernada negatif di tiap periode. "
+                "Bar berwarna merah berarti lebih dari 60% komentar pada periode itu bernada negatif — perlu perhatian lebih."
+            )
             st.divider()
 
             # ── Tabel ─────────────────────────────────────────────────────────
@@ -616,6 +806,10 @@ with tab2:
                     .sort_values("Periode", ascending=False)
                     .style.background_gradient(subset=["% Negatif"], cmap="Reds"),
                 use_container_width=True, hide_index=True, height=350,
+            )
+            st.caption(
+                "Tabel lengkap data tren. Klik header kolom untuk mengurutkan. "
+                "Warna merah pada kolom % Negatif semakin gelap berarti semakin tinggi proporsi komentar negatif."
             )
 
 
@@ -648,6 +842,10 @@ with tab3:
                           yaxis=dict(range=[0, freq_df["frekuensi"].max()*1.22]),
                           height=450, margin=dict(t=55,b=85))
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "Grafik batang menampilkan kata-kata yang paling sering muncul. "
+            "Angka di atas batang adalah jumlah kemunculan kata tersebut di komentar."
+        )
         st.divider()
 
         # Horizontal bar dengan persentase
@@ -665,6 +863,10 @@ with tab3:
                            height=max(380, top_n_words*22),
                            margin=dict(t=55,b=15,l=110))
         st.plotly_chart(fig2, use_container_width=True)
+        st.caption(
+            "Grafik horizontal ini menunjukkan seberapa besar kontribusi setiap kata dari total kata yang ada. "
+            "Warna semakin gelap berarti kata itu semakin dominan."
+        )
         st.divider()
 
         # Perbandingan kata per sentimen
@@ -684,6 +886,10 @@ with tab3:
                     fig_s.update_layout(title=f"{lbl.capitalize()}",
                                         height=420, margin=dict(t=50,b=10,l=100))
                     st.plotly_chart(fig_s, use_container_width=True)
+        st.caption(
+            "Perbandingan ini membantu kita lihat kata apa yang sering muncul di setiap kategori sentimen. "
+            "Misal: kata 'semoga', 'dukungan' lebih banyak di positif, sedangkan 'bahaya', 'tolak' di negatif."
+        )
         st.divider()
 
         # Kata eksklusif per sentimen (dominance score)
@@ -711,7 +917,11 @@ with tab3:
                                     xaxis_title="Dominance (%)",
                                     height=420, margin=dict(t=50,b=10,l=100))
                 st.plotly_chart(fig_d, use_container_width=True)
-
+        st.caption(
+            "Grafik ini menampilkan kata yang paling 'khas' per sentimen — "
+            "yaitu kata yang proporsinya jauh lebih tinggi dibanding rata-rata. "
+            "Semakin panjang batangnya, semakin unik kata itu untuk sentimen tersebut."
+        )
         st.divider()
 
         # Tabel
@@ -759,6 +969,10 @@ with tab4:
                 margin=dict(t=55,b=15,l=160),
             )
             st.plotly_chart(fig_ng, use_container_width=True)
+            st.caption(
+                "N-gram adalah kombinasi dua atau tiga kata yang sering muncul bersamaan. "
+                "Ini membantu memahami konteks kalimat, bukan hanya kata tunggal."
+            )
 
     st.divider()
 
@@ -777,7 +991,10 @@ with tab4:
                 fig_ns.update_layout(title=f"{lbl.capitalize()}",
                                      height=380, margin=dict(t=50,b=10,l=140))
                 st.plotly_chart(fig_ns, use_container_width=True)
-
+    st.caption(
+        "Perbandingan frasa yang sering muncul di setiap sentimen. "
+        "Frasa seperti 'tentara masuk sipil' lebih sering di negatif, sedangkan frasa lain bisa lebih banyak di positif."
+    )
     st.divider()
 
     # Word cloud
@@ -792,6 +1009,10 @@ with tab4:
             with st.spinner(f"Membuat word cloud {name}..."):
                 img = get_wordcloud_img(df, lbl, bg)
             st.image(img, use_container_width=True)
+            st.caption(
+                "Kata yang lebih besar dan tebal berarti lebih sering muncul di komentar. "
+                "Word cloud memudahkan pembacaan topik utama secara visual sekaligus."
+            )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — INSIGHT PER VIDEO
@@ -814,6 +1035,10 @@ with tab5:
         fig.update_layout(height=450, margin=dict(t=55,b=150), xaxis_tickangle=-25,
                           legend=dict(orientation="h", y=1.06))
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "Setiap batang mewakili satu video. Bagian warna menunjukkan proporsi setiap sentimen. "
+            "Video dengan bagian merah besar artinya banyak komentar negatif di sana."
+        )
     with v2:
         # Pie chart per video — satu pie per video menggunakan subplot
         from plotly.subplots import make_subplots
@@ -855,6 +1080,10 @@ with tab5:
                         font=dict(size=12, color="#1E293B")),
         )
         st.plotly_chart(fig_pie, use_container_width=True)
+        st.caption(
+            "Setiap lingkaran mewakili satu video. Warna merah = negatif, hijau = positif, biru = netral. "
+            "Video dengan porsi merah besar berarti lebih banyak menuai komentar negatif."
+        )
 
     st.divider()
 
@@ -884,6 +1113,10 @@ with tab5:
                        .background_gradient(subset=["% Positif"], cmap="Greens"),
             use_container_width=True, hide_index=True,
         )
+        st.caption(
+            "Tabel ini merangkum metrik utama tiap video. "
+            "Video dengan % Negatif tinggi (merah gelap) paling banyak memicu reaksi negatif dari penonton."
+        )
 
     st.divider()
 
@@ -909,3 +1142,7 @@ with tab5:
                 fig_v.update_layout(title=title_short,
                                     height=360, margin=dict(t=50,b=10,l=100))
                 st.plotly_chart(fig_v, use_container_width=True)
+    st.caption(
+        "Masing-masing video punya topik kata yang dominan di komentarnya. "
+        "Ini membantu menangkap fokus utama diskusi per video — misalnya kata 'tni', 'sipil', 'bahaya', dll."
+    )
